@@ -65,6 +65,27 @@ def fmt_reset(ms, with_date):
     return hm
 
 
+def theory_pct(unit, number, reset_ms, now_ms=None):
+    """Pace mark semantics from the PC balance card: theoretical usage =
+    elapsed window time ceil-rounded to ticks (a started tick counts);
+    1h ticks for hour windows, 12h ticks for week windows.
+    E.g. 5h window 49min in -> 1/5 = 20%; exactly 2h in -> 2/5 = 40%."""
+    if unit == 3:
+        total, tick = number * 3600_000, 3600_000
+    elif unit == 6:
+        total, tick = number * 7 * 24 * 3600_000, 12 * 3600_000
+    else:
+        return None
+    if not isinstance(reset_ms, (int, float)):
+        return None
+    if now_ms is None:
+        now_ms = time.time() * 1000
+    elapsed = total - (reset_ms - now_ms)
+    elapsed = max(0, min(total, elapsed))
+    ticks = -(-elapsed // tick)
+    return int(ticks * tick * 100 // total)
+
+
 def fetch_upstream(key):
     """One official call. Returns (ok, http_status, limits_list, level)."""
     req = urllib.request.Request(
@@ -95,6 +116,7 @@ def window_obj(L):
         "used": L.get("currentValue", 0),
         "limit": L.get("usage", 0),
         "pct": L.get("percentage", 0),
+        "theory_pct": theory_pct(unit, number, reset_ms),
         "reset_ms": reset_ms,
         "reset_local": fmt_reset(reset_ms, with_date) if isinstance(reset_ms, (int, float)) else "",
     }

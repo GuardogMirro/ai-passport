@@ -1,6 +1,7 @@
-// main/demo_balance.c —— GLM 积分余额监控页(官方配额版 v4)。
-// 双进度条+百分比+窗口重置时刻+右上角刷新时间;数值来自 tools/balance_server.py
-// 代理的智谱官方端点 /api/monitor/usage/quota/limit(与 PC 侧余额卡同源同数)。
+// main/demo_balance.c —— GLM 积分余额监控页(官方配额版 v5)。
+// 每卡:标题(窗口重置时刻)+ 主百分比"实际%/理论%"+ 进度条(理论刻度线);
+// 数值来自 tools/balance_server.py 代理的智谱官方端点
+// /api/monitor/usage/quota/limit(与 PC 侧余额卡同源同数,理论节奏同算法)。
 #include "demo.h"
 #include "demo_radio.h"
 #include "bsp_display.h"
@@ -43,8 +44,8 @@ typedef enum {
 static lv_obj_t *s_scr;
 static lv_obj_t *s_status;
 static lv_obj_t *s_upd_label;
-static lv_obj_t *s_val5, *s_bar5, *s_pct5, *s_title5;
-static lv_obj_t *s_valw, *s_barw, *s_pctw, *s_titlew;
+static lv_obj_t *s_bar5, *s_pct5, *s_title5, *s_mark5;
+static lv_obj_t *s_barw, *s_pctw, *s_titlew, *s_markw;
 static lv_timer_t *s_timer;
 
 static esp_netif_t *s_sta_netif;
@@ -61,6 +62,7 @@ static volatile bal_state_t s_state;
 static char s_status_text[96];
 static int s_used_5h, s_limit_5h;
 static int s_used_wk, s_limit_wk;
+static int s_theo_5h = -1, s_theo_wk = -1;
 static char s_reset_5h[16];
 static char s_reset_wk[16];
 static char s_level[8] = "GLM";
@@ -120,12 +122,14 @@ static void parse_body(const char *body)
     if (w5) {
         if ((p = cJSON_GetObjectItem(w5, "used")) && cJSON_IsNumber(p)) s_used_5h = p->valueint;
         if ((p = cJSON_GetObjectItem(w5, "limit")) && cJSON_IsNumber(p)) s_limit_5h = p->valueint;
+        if ((p = cJSON_GetObjectItem(w5, "theory_pct")) && cJSON_IsNumber(p)) s_theo_5h = p->valueint;
         if ((p = cJSON_GetObjectItem(w5, "reset_local")) && cJSON_IsString(p) && p->valuestring)
             strlcpy(s_reset_5h, p->valuestring, sizeof(s_reset_5h));
     }
     if (wk) {
         if ((p = cJSON_GetObjectItem(wk, "used")) && cJSON_IsNumber(p)) s_used_wk = p->valueint;
         if ((p = cJSON_GetObjectItem(wk, "limit")) && cJSON_IsNumber(p)) s_limit_wk = p->valueint;
+        if ((p = cJSON_GetObjectItem(wk, "theory_pct")) && cJSON_IsNumber(p)) s_theo_wk = p->valueint;
         if ((p = cJSON_GetObjectItem(wk, "reset_local")) && cJSON_IsString(p) && p->valuestring)
             strlcpy(s_reset_wk, p->valuestring, sizeof(s_reset_wk));
     }
@@ -255,18 +259,33 @@ esp_err_t demo_balance_stop(void)
     return ESP_OK;
 }
 
-// 告警色语义与 PC 侧余额卡一致:>=70% 橙、>=90% 红,常态用传入的基础色。
-static void set_bar(lv_obj_t *bar, lv_obj_t *pct, int used, int limit, uint32_t base_color)
+// 语义与 PC 侧余额卡一致:文本"实际%/理论%";理论位置画 2px 刻度线;
+// 颜色——超理论橙,≥90% 或超理论 20 个百分点红,否则基础色(文字为墨色)。
+static void set_window(lv_obj_t *bar, lv_obj_t *pct, lv_obj_t *mark,
+                       int used, int limit, int theo, uint32_t base_color)
 {
     int ipct = limit > 0 ? (used * 100 + limit / 2) / limit : 0;
     if (ipct < 0) ipct = 0;
     if (ipct > 100) ipct = 100;
-    uint32_t color = base_color;
-    if (ipct >= 90) color = UI_RED;
-    else if (ipct >= 70) color = UI_ORANGE;
     lv_bar_set_value(bar, ipct, LV_ANIM_OFF);
-    lv_label_set_text_fmt(pct, "%d%%", ipct);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(color), LV_PART_INDICATOR);
+    if (theo >= 0) lv_label_set_text_fmt(pct, "%d%% / %d%%", ipct, theo);
+    else lv_label_set_text_fmt(pct, "%d%%", ipct);
+    bool over = theo >= 0 && ipct > theo;
+    bool red = ipct >= 90 || (theo >= 0 && ipct - theo >= 20);
+    uint32_t bar_color = red ? UI_RED : (over ? UI_ORANGE : base_color);
+    uint32_t txt_color = red ? UI_RED : (over ? UI_ORANGE : UI_INK);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(bar_color), LV_PART_INDICATOR);
+    lv_obj_set_style_text_color(pct, lv_color_hex(txt_color), 0);
+    if (mark) {
+        if (theo >= 0 && theo <= 100) {
+            int xm = 4 + theo * 132 / 100;
+            if (xm > 4 + 130) xm = 4 + 130;
+            lv_obj_set_pos(mark, xm, 39);
+            lv_obj_clear_flag(mark, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(mark, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
 }
 
 static void tick(lv_timer_t *timer)
@@ -282,20 +301,18 @@ static void tick(lv_timer_t *timer)
     // 配额上限以服务端官方值为准;拿不到时回退编译期档位宏。
     int lim5 = s_limit_5h > 0 ? s_limit_5h : NET_PLAN_5H;
     int limw = s_limit_wk > 0 ? s_limit_wk : NET_PLAN_WEEK;
-    lv_label_set_text_fmt(s_val5, "%d / %d", s_used_5h, lim5);
-    lv_label_set_text_fmt(s_valw, "%d / %d", s_used_wk, limw);
-    set_bar(s_bar5, s_pct5, s_used_5h, lim5, UI_GRASS);
-    set_bar(s_barw, s_pctw, s_used_wk, limw, UI_SKY);
+    set_window(s_bar5, s_pct5, s_mark5, s_used_5h, lim5, s_theo_5h, UI_GRASS);
+    set_window(s_barw, s_pctw, s_markw, s_used_wk, limw, s_theo_wk, UI_SKY);
     lv_label_set_text_fmt(s_title5, "5H RESET %s", s_reset_5h[0] ? s_reset_5h : "--:--");
     lv_label_set_text_fmt(s_titlew, "7D RESET %s", s_reset_wk[0] ? s_reset_wk : "--:--");
 }
 
 // 面板内部几何(内容区高 56px = 78 - 边框8 - 内边距14):
-// 标题 y1(14px)、数值 y17(20px,底 y37)、进度条底锚 -3(y39-53)。
-// 数值与条之间留 2px 净空,杜绝 v3/v4 数值坠入条区的重叠。
+// 标题 y1(14px)、百分比 y17(20px,底 y37)、进度条底锚 -3(y39-53)。
+// 条上另有 2px 宽理论刻度线(mark,y39-53,x=4+theo*132/100)。
 static lv_obj_t *build_block(lv_obj_t *parent, const char *title, int y,
-                             lv_obj_t **val, lv_obj_t **bar, lv_obj_t **pct,
-                             lv_obj_t **title_out)
+                             lv_obj_t **bar, lv_obj_t **pct,
+                             lv_obj_t **title_out, lv_obj_t **mark_out)
 {
     lv_obj_t *panel = ui_pixel_panel_create(parent, 12, y, 216, 78, UI_PAPER);
     lv_obj_t *t = lv_label_create(panel);
@@ -304,11 +321,11 @@ static lv_obj_t *build_block(lv_obj_t *parent, const char *title, int y,
     lv_obj_align(t, LV_ALIGN_TOP_LEFT, 4, 1);
     lv_label_set_text(t, title);
     if (title_out) *title_out = t;
-    *val = lv_label_create(panel);
-    lv_obj_set_style_text_font(*val, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(*val, lv_color_hex(UI_INK), 0);
-    lv_obj_align(*val, LV_ALIGN_TOP_LEFT, 4, 17);
-    lv_label_set_text(*val, "-- / --");
+    *pct = lv_label_create(panel);
+    lv_obj_set_style_text_font(*pct, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(*pct, lv_color_hex(UI_INK), 0);
+    lv_obj_align(*pct, LV_ALIGN_TOP_LEFT, 4, 17);
+    lv_label_set_text(*pct, "-%");
     *bar = lv_bar_create(panel);
     lv_obj_set_style_bg_color(*bar, lv_color_hex(UI_MUTED), 0);
     lv_obj_set_style_bg_opa(*bar, LV_OPA_COVER, 0);
@@ -316,17 +333,22 @@ static lv_obj_t *build_block(lv_obj_t *parent, const char *title, int y,
     lv_bar_set_range(*bar, 0, 100);
     lv_obj_set_size(*bar, 132, 14);
     lv_obj_align(*bar, LV_ALIGN_BOTTOM_LEFT, 4, -3);
-    *pct = lv_label_create(panel);
-    lv_obj_set_style_text_font(*pct, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(*pct, lv_color_hex(UI_INK), 0);
-    lv_obj_align(*pct, LV_ALIGN_BOTTOM_RIGHT, -6, -6);
-    lv_label_set_text(*pct, "-%");
+    lv_obj_t *m = lv_obj_create(panel);
+    lv_obj_set_size(m, 2, 14);
+    lv_obj_set_pos(m, 4, 39);
+    lv_obj_set_style_bg_color(m, lv_color_hex(UI_INK), 0);
+    lv_obj_set_style_bg_opa(m, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(m, 0, 0);
+    lv_obj_set_style_radius(m, 0, 0);
+    lv_obj_add_flag(m, LV_OBJ_FLAG_HIDDEN);
+    if (mark_out) *mark_out = m;
     return panel;
 }
 
 void demo_balance_enter(void)
 {
     s_used_5h = s_limit_5h = s_used_wk = s_limit_wk = 0;
+    s_theo_5h = s_theo_wk = -1;
     s_reset_5h[0] = s_reset_wk[0] = '\0';
     strlcpy(s_level, "GLM", sizeof(s_level));
     s_stale = false;
@@ -345,8 +367,8 @@ void demo_balance_enter(void)
     lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_OFF);
     serial_screenshot_set_target(content);
 
-    build_block(content, "5H WINDOW", 8, &s_val5, &s_bar5, &s_pct5, &s_title5);
-    build_block(content, "7D WINDOW", 92, &s_valw, &s_barw, &s_pctw, &s_titlew);
+    build_block(content, "5H WINDOW", 8, &s_bar5, &s_pct5, &s_title5, &s_mark5);
+    build_block(content, "7D WINDOW", 92, &s_barw, &s_pctw, &s_titlew, &s_markw);
 
     s_status = lv_label_create(content);
     lv_obj_set_width(s_status, 216);
@@ -374,9 +396,10 @@ void demo_balance_exit(void)
         s_scr = NULL;
         s_status = NULL;
         s_upd_label = NULL;
-        s_val5 = s_bar5 = s_pct5 = NULL;
-        s_valw = s_barw = s_pctw = NULL;
+        s_bar5 = s_pct5 = NULL;
+        s_barw = s_pctw = NULL;
         s_title5 = s_titlew = NULL;
+        s_mark5 = s_markw = NULL;
     }
 }
 
