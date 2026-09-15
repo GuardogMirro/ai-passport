@@ -290,23 +290,24 @@ static void tick(lv_timer_t *timer)
     lv_label_set_text_fmt(s_titlew, "7D RESET %s", s_reset_wk[0] ? s_reset_wk : "--:--");
 }
 
-// 面板内部几何:标题 y2(14px)、数值 y20(20px)、进度条 y46 h14(共 62px,
-// 面板高 72 留 10px 余量,杜绝边框/内边距裁剪)。
+// 面板内部几何(内容区高 56px = 78 - 边框8 - 内边距14):
+// 标题 y1(14px)、数值 y17(20px,底 y37)、进度条底锚 -3(y39-53)。
+// 数值与条之间留 2px 净空,杜绝 v3/v4 数值坠入条区的重叠。
 static lv_obj_t *build_block(lv_obj_t *parent, const char *title, int y,
                              lv_obj_t **val, lv_obj_t **bar, lv_obj_t **pct,
                              lv_obj_t **title_out)
 {
-    lv_obj_t *panel = ui_pixel_panel_create(parent, 12, y, 216, 72, UI_PAPER);
+    lv_obj_t *panel = ui_pixel_panel_create(parent, 12, y, 216, 78, UI_PAPER);
     lv_obj_t *t = lv_label_create(panel);
     lv_obj_set_style_text_font(t, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(t, lv_color_hex(UI_SKY_DARK), 0);
-    lv_obj_align(t, LV_ALIGN_TOP_LEFT, 4, 2);
+    lv_obj_align(t, LV_ALIGN_TOP_LEFT, 4, 1);
     lv_label_set_text(t, title);
     if (title_out) *title_out = t;
     *val = lv_label_create(panel);
     lv_obj_set_style_text_font(*val, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(*val, lv_color_hex(UI_INK), 0);
-    lv_obj_align(*val, LV_ALIGN_TOP_LEFT, 4, 20);
+    lv_obj_align(*val, LV_ALIGN_TOP_LEFT, 4, 17);
     lv_label_set_text(*val, "-- / --");
     *bar = lv_bar_create(panel);
     lv_obj_set_style_bg_color(*bar, lv_color_hex(UI_MUTED), 0);
@@ -314,7 +315,7 @@ static lv_obj_t *build_block(lv_obj_t *parent, const char *title, int y,
     lv_obj_set_style_border_width(*bar, 0, 0);
     lv_bar_set_range(*bar, 0, 100);
     lv_obj_set_size(*bar, 132, 14);
-    lv_obj_align(*bar, LV_ALIGN_BOTTOM_LEFT, 4, -4);
+    lv_obj_align(*bar, LV_ALIGN_BOTTOM_LEFT, 4, -3);
     *pct = lv_label_create(panel);
     lv_obj_set_style_text_font(*pct, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(*pct, lv_color_hex(UI_INK), 0);
@@ -344,20 +345,20 @@ void demo_balance_enter(void)
     lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_OFF);
     serial_screenshot_set_target(content);
 
-    build_block(content, "5H WINDOW", 10, &s_val5, &s_bar5, &s_pct5, &s_title5);
-    build_block(content, "7D WINDOW", 96, &s_valw, &s_barw, &s_pctw, &s_titlew);
+    build_block(content, "5H WINDOW", 8, &s_val5, &s_bar5, &s_pct5, &s_title5);
+    build_block(content, "7D WINDOW", 92, &s_valw, &s_barw, &s_pctw, &s_titlew);
 
     s_status = lv_label_create(content);
     lv_obj_set_width(s_status, 216);
     lv_obj_set_style_text_font(s_status, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_status, lv_color_hex(UI_SKY_DARK), 0);
-    lv_obj_align(s_status, LV_ALIGN_TOP_LEFT, 4, 168);
+    lv_obj_align(s_status, LV_ALIGN_TOP_LEFT, 4, 172);
     lv_label_set_text(s_status, s_status_text);
 
     s_upd_label = lv_label_create(content);
     lv_obj_set_style_text_font(s_upd_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_upd_label, lv_color_hex(UI_INK), 0);
-    lv_obj_align(s_upd_label, LV_ALIGN_TOP_RIGHT, -6, 168);
+    lv_obj_align(s_upd_label, LV_ALIGN_TOP_RIGHT, -6, 172);
     lv_label_set_text(s_upd_label, s_upd_time);
 
     s_timer = lv_timer_create(tick, 250, NULL);
