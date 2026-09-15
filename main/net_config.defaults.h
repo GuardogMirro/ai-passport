@@ -9,5 +9,5 @@
 // Balance page settings.
 #define NET_SERVER_URL "http://192.168.1.37:8765/balance"
 // Plan quotas for display: Lite 2000/10000, Pro 12000/60000, Max 28000/140000.
-#define NET_PLAN_5H 12000
-#define NET_PLAN_WEEK 60000
+#define NET_PLAN_5H 28000
+#define NET_PLAN_WEEK 140000
