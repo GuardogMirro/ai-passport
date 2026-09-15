@@ -4,3 +4,5 @@ sdkconfig.old
 managed_components/
 .vscode/
 .idea/
+main/net_config.h
+tools/.balance_history.json

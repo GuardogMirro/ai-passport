@@ -1,0 +1,10 @@
+// main/net_config.h.example -- copy to main/net_config.h and fill your own values.
+// net_config.h is git-ignored: NEVER commit real credentials.
+#pragma once
+
+// 2.4 GHz Wi-Fi only (ESP32-C3 has no 5 GHz radio).
+#define NET_WIFI_SSID "YOUR_WIFI_NAME"
+#define NET_WIFI_PASS "YOUR_WIFI_PASSWORD"
+
+// BigModel (GLM) API key from the Zhipu open platform console.
+#define NET_BIGMODEL_KEY "YOUR_API_KEY"
