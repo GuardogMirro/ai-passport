@@ -1,5 +1,6 @@
-// main/demo_balance.c —— GLM 积分余额监控页(进度条版 v3)。
-// 双进度条+百分比+右上角刷新时间;数值来自 tools/balance_server.py 的滚动窗。
+// main/demo_balance.c —— GLM 积分余额监控页(官方配额版 v4)。
+// 双进度条+百分比+窗口重置时刻+右上角刷新时间;数值来自 tools/balance_server.py
+// 代理的智谱官方端点 /api/monitor/usage/quota/limit(与 PC 侧余额卡同源同数)。
 #include "demo.h"
 #include "demo_radio.h"
 #include "bsp_display.h"
@@ -42,8 +43,8 @@ typedef enum {
 static lv_obj_t *s_scr;
 static lv_obj_t *s_status;
 static lv_obj_t *s_upd_label;
-static lv_obj_t *s_val5, *s_bar5, *s_pct5;
-static lv_obj_t *s_valw, *s_barw, *s_pctw;
+static lv_obj_t *s_val5, *s_bar5, *s_pct5, *s_title5;
+static lv_obj_t *s_valw, *s_barw, *s_pctw, *s_titlew;
 static lv_timer_t *s_timer;
 
 static esp_netif_t *s_sta_netif;
@@ -58,8 +59,12 @@ static bool s_handlers_registered;
 
 static volatile bal_state_t s_state;
 static char s_status_text[96];
-static double s_pts_5h;
-static double s_pts_week;
+static int s_used_5h, s_limit_5h;
+static int s_used_wk, s_limit_wk;
+static char s_reset_5h[16];
+static char s_reset_wk[16];
+static char s_level[8] = "GLM";
+static bool s_stale;
 static char s_upd_time[8] = "--:--";
 
 static void set_status(bal_state_t st, const char *fmt, ...)
@@ -88,6 +93,9 @@ static void on_disconnected(void *arg, esp_event_base_t base, int32_t id, void *
     }
 }
 
+// v4 schema(官方端点经 server 代理):
+//   { ok, level, stale, now_local,
+//     window_5h: {used, limit, pct, reset_local}, week: {...} }
 static void parse_body(const char *body)
 {
     cJSON *root = cJSON_Parse(body);
@@ -95,15 +103,38 @@ static void parse_body(const char *body)
         set_status(BAL_ERROR, "Bad JSON");
         return;
     }
+    const cJSON *ok = cJSON_GetObjectItem(root, "ok");
+    if (!cJSON_IsTrue(ok)) {
+        const cJSON *er = cJSON_GetObjectItem(root, "error");
+        set_status(BAL_ERROR, "srv: %s",
+                   (er && cJSON_IsString(er) && er->valuestring) ? er->valuestring : "not ok");
+        cJSON_Delete(root);
+        return;
+    }
     const cJSON *w5 = cJSON_GetObjectItem(root, "window_5h");
     const cJSON *wk = cJSON_GetObjectItem(root, "week");
     const cJSON *nt = cJSON_GetObjectItem(root, "now_local");
+    const cJSON *lvl = cJSON_GetObjectItem(root, "level");
+    const cJSON *st = cJSON_GetObjectItem(root, "stale");
     const cJSON *p;
-    if (w5 && (p = cJSON_GetObjectItem(w5, "points")) && cJSON_IsNumber(p)) s_pts_5h = p->valuedouble;
-    if (wk && (p = cJSON_GetObjectItem(wk, "points")) && cJSON_IsNumber(p)) s_pts_week = p->valuedouble;
+    if (w5) {
+        if ((p = cJSON_GetObjectItem(w5, "used")) && cJSON_IsNumber(p)) s_used_5h = p->valueint;
+        if ((p = cJSON_GetObjectItem(w5, "limit")) && cJSON_IsNumber(p)) s_limit_5h = p->valueint;
+        if ((p = cJSON_GetObjectItem(w5, "reset_local")) && cJSON_IsString(p) && p->valuestring)
+            strlcpy(s_reset_5h, p->valuestring, sizeof(s_reset_5h));
+    }
+    if (wk) {
+        if ((p = cJSON_GetObjectItem(wk, "used")) && cJSON_IsNumber(p)) s_used_wk = p->valueint;
+        if ((p = cJSON_GetObjectItem(wk, "limit")) && cJSON_IsNumber(p)) s_limit_wk = p->valueint;
+        if ((p = cJSON_GetObjectItem(wk, "reset_local")) && cJSON_IsString(p) && p->valuestring)
+            strlcpy(s_reset_wk, p->valuestring, sizeof(s_reset_wk));
+    }
     if (nt && cJSON_IsString(nt) && nt->valuestring) strlcpy(s_upd_time, nt->valuestring, sizeof(s_upd_time));
+    if (lvl && cJSON_IsString(lvl) && lvl->valuestring) strlcpy(s_level, lvl->valuestring, sizeof(s_level));
+    s_stale = cJSON_IsTrue(st);
     cJSON_Delete(root);
-    set_status(BAL_ONLINE, "upd %s", s_upd_time);
+    if (s_stale) set_status(BAL_ONLINE, "%s stale %s", s_level, s_upd_time);
+    else set_status(BAL_ONLINE, "%s upd %s", s_level, s_upd_time);
 }
 
 static void fetch_once(void)
@@ -224,19 +255,15 @@ esp_err_t demo_balance_stop(void)
     return ESP_OK;
 }
 
-static void fmt_pts(char *buf, int n, double pts, int quota)
+// 告警色语义与 PC 侧余额卡一致:>=70% 橙、>=90% 红,常态用传入的基础色。
+static void set_bar(lv_obj_t *bar, lv_obj_t *pct, int used, int limit, uint32_t base_color)
 {
-    int whole = (int)pts;
-    int tenth = (int)((pts - whole) * 10.0 + 0.5);
-    if (tenth >= 10) { whole += 1; tenth -= 10; }
-    snprintf(buf, n, "%d.%d / %d", whole, tenth, quota);
-}
-
-static void set_bar(lv_obj_t *bar, lv_obj_t *pct, double pts, int quota, uint32_t color)
-{
-    int ipct = quota > 0 ? (int)(pts * 100.0 / quota + 0.5) : 0;
+    int ipct = limit > 0 ? (used * 100 + limit / 2) / limit : 0;
     if (ipct < 0) ipct = 0;
     if (ipct > 100) ipct = 100;
+    uint32_t color = base_color;
+    if (ipct >= 90) color = UI_RED;
+    else if (ipct >= 70) color = UI_ORANGE;
     lv_bar_set_value(bar, ipct, LV_ANIM_OFF);
     lv_label_set_text_fmt(pct, "%d%%", ipct);
     lv_obj_set_style_bg_color(bar, lv_color_hex(color), LV_PART_INDICATOR);
@@ -247,23 +274,27 @@ static void tick(lv_timer_t *timer)
     (void)timer;
     if (!s_status) return;
     lv_label_set_text(s_status, s_status_text);
-    if (s_state == BAL_ONLINE) lv_obj_set_style_text_color(s_status, lv_color_hex(UI_GRASS_DARK), 0);
-    else if (s_state == BAL_ERROR) lv_obj_set_style_text_color(s_status, lv_color_hex(UI_RED), 0);
+    if (s_state == BAL_ERROR) lv_obj_set_style_text_color(s_status, lv_color_hex(UI_RED), 0);
+    else if (s_state == BAL_ONLINE && s_stale) lv_obj_set_style_text_color(s_status, lv_color_hex(UI_ORANGE), 0);
+    else if (s_state == BAL_ONLINE) lv_obj_set_style_text_color(s_status, lv_color_hex(UI_GRASS_DARK), 0);
     else lv_obj_set_style_text_color(s_status, lv_color_hex(UI_SKY_DARK), 0);
     if (s_upd_label) lv_label_set_text(s_upd_label, s_upd_time);
-    char v5[40], vw[40];
-    fmt_pts(v5, sizeof(v5), s_pts_5h, NET_PLAN_5H);
-    fmt_pts(vw, sizeof(vw), s_pts_week, NET_PLAN_WEEK);
-    lv_label_set_text(s_val5, v5);
-    lv_label_set_text(s_valw, vw);
-    set_bar(s_bar5, s_pct5, s_pts_5h, NET_PLAN_5H, UI_GRASS);
-    set_bar(s_barw, s_pctw, s_pts_week, NET_PLAN_WEEK, UI_SKY);
+    // 配额上限以服务端官方值为准;拿不到时回退编译期档位宏。
+    int lim5 = s_limit_5h > 0 ? s_limit_5h : NET_PLAN_5H;
+    int limw = s_limit_wk > 0 ? s_limit_wk : NET_PLAN_WEEK;
+    lv_label_set_text_fmt(s_val5, "%d / %d", s_used_5h, lim5);
+    lv_label_set_text_fmt(s_valw, "%d / %d", s_used_wk, limw);
+    set_bar(s_bar5, s_pct5, s_used_5h, lim5, UI_GRASS);
+    set_bar(s_barw, s_pctw, s_used_wk, limw, UI_SKY);
+    lv_label_set_text_fmt(s_title5, "5H RESET %s", s_reset_5h[0] ? s_reset_5h : "--:--");
+    lv_label_set_text_fmt(s_titlew, "7D RESET %s", s_reset_wk[0] ? s_reset_wk : "--:--");
 }
 
 // 面板内部几何:标题 y2(14px)、数值 y20(20px)、进度条 y46 h14(共 62px,
 // 面板高 72 留 10px 余量,杜绝边框/内边距裁剪)。
 static lv_obj_t *build_block(lv_obj_t *parent, const char *title, int y,
-                             lv_obj_t **val, lv_obj_t **bar, lv_obj_t **pct)
+                             lv_obj_t **val, lv_obj_t **bar, lv_obj_t **pct,
+                             lv_obj_t **title_out)
 {
     lv_obj_t *panel = ui_pixel_panel_create(parent, 12, y, 216, 72, UI_PAPER);
     lv_obj_t *t = lv_label_create(panel);
@@ -271,6 +302,7 @@ static lv_obj_t *build_block(lv_obj_t *parent, const char *title, int y,
     lv_obj_set_style_text_color(t, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(t, LV_ALIGN_TOP_LEFT, 4, 2);
     lv_label_set_text(t, title);
+    if (title_out) *title_out = t;
     *val = lv_label_create(panel);
     lv_obj_set_style_text_font(*val, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(*val, lv_color_hex(UI_INK), 0);
@@ -293,7 +325,10 @@ static lv_obj_t *build_block(lv_obj_t *parent, const char *title, int y,
 
 void demo_balance_enter(void)
 {
-    s_pts_5h = s_pts_week = 0.0;
+    s_used_5h = s_limit_5h = s_used_wk = s_limit_wk = 0;
+    s_reset_5h[0] = s_reset_wk[0] = '\0';
+    strlcpy(s_level, "GLM", sizeof(s_level));
+    s_stale = false;
     strlcpy(s_upd_time, "--:--", sizeof(s_upd_time));
     strlcpy(s_status_text, "starting...", sizeof(s_status_text));
     s_state = BAL_WIFI_CONNECTING;
@@ -309,8 +344,8 @@ void demo_balance_enter(void)
     lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_OFF);
     serial_screenshot_set_target(content);
 
-    build_block(content, "5H ROLLING", 10, &s_val5, &s_bar5, &s_pct5);
-    build_block(content, "7D WEEKLY", 96, &s_valw, &s_barw, &s_pctw);
+    build_block(content, "5H WINDOW", 10, &s_val5, &s_bar5, &s_pct5, &s_title5);
+    build_block(content, "7D WINDOW", 96, &s_valw, &s_barw, &s_pctw, &s_titlew);
 
     s_status = lv_label_create(content);
     lv_obj_set_width(s_status, 216);
@@ -340,6 +375,7 @@ void demo_balance_exit(void)
         s_upd_label = NULL;
         s_val5 = s_bar5 = s_pct5 = NULL;
         s_valw = s_barw = s_pctw = NULL;
+        s_title5 = s_titlew = NULL;
     }
 }
 
