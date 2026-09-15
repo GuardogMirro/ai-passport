@@ -70,7 +70,7 @@ static void menu_refresh(void) {
 }
 
 static void menu_build(void) {
-    s_menu_scr = ui_pixel_screen_create("FoloToy");
+    s_menu_scr = ui_pixel_screen_create("John-Fang");
 
     for (size_t i = 0; i < DEMO_COUNT; i++) {
         int x = 11 + (int)(i % 2) * 112;
