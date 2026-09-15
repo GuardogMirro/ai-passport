@@ -1,6 +1,5 @@
-// main/demo_balance.c —— GLM 积分余额监控页(进度条版)。
-// 连接 NET_WIFI_SSID,轮询局域网聚合服务(NET_SERVER_URL,见 tools/balance_server.py),
-// 双进度条显示滚动 5 小时窗与 7 天窗的估算积分消耗及百分比、刷新时间。
+// main/demo_balance.c —— GLM 积分余额监控页(进度条版 v3)。
+// 双进度条+百分比+右上角刷新时间;数值来自 tools/balance_server.py 的滚动窗。
 #include "demo.h"
 #include "demo_radio.h"
 #include "bsp_display.h"
@@ -248,10 +247,10 @@ static void tick(lv_timer_t *timer)
     (void)timer;
     if (!s_status) return;
     lv_label_set_text(s_status, s_status_text);
-    if (s_upd_label) lv_label_set_text_fmt(s_upd_label, "%s", s_upd_time);
     if (s_state == BAL_ONLINE) lv_obj_set_style_text_color(s_status, lv_color_hex(UI_GRASS_DARK), 0);
     else if (s_state == BAL_ERROR) lv_obj_set_style_text_color(s_status, lv_color_hex(UI_RED), 0);
     else lv_obj_set_style_text_color(s_status, lv_color_hex(UI_SKY_DARK), 0);
+    if (s_upd_label) lv_label_set_text(s_upd_label, s_upd_time);
     char v5[40], vw[40];
     fmt_pts(v5, sizeof(v5), s_pts_5h, NET_PLAN_5H);
     fmt_pts(vw, sizeof(vw), s_pts_week, NET_PLAN_WEEK);
@@ -261,30 +260,33 @@ static void tick(lv_timer_t *timer)
     set_bar(s_barw, s_pctw, s_pts_week, NET_PLAN_WEEK, UI_SKY);
 }
 
+// 面板内部几何:标题 y2(14px)、数值 y20(20px)、进度条 y46 h14(共 62px,
+// 面板高 72 留 10px 余量,杜绝边框/内边距裁剪)。
 static lv_obj_t *build_block(lv_obj_t *parent, const char *title, int y,
                              lv_obj_t **val, lv_obj_t **bar, lv_obj_t **pct)
 {
-    lv_obj_t *panel = ui_pixel_panel_create(parent, 12, y, 216, 68, UI_PAPER);
+    lv_obj_t *panel = ui_pixel_panel_create(parent, 12, y, 216, 72, UI_PAPER);
     lv_obj_t *t = lv_label_create(panel);
     lv_obj_set_style_text_font(t, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(t, lv_color_hex(UI_SKY_DARK), 0);
-    lv_obj_align(t, LV_ALIGN_TOP_LEFT, 2, 2);
+    lv_obj_align(t, LV_ALIGN_TOP_LEFT, 4, 2);
     lv_label_set_text(t, title);
     *val = lv_label_create(panel);
     lv_obj_set_style_text_font(*val, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(*val, lv_color_hex(UI_INK), 0);
-    lv_obj_align(*val, LV_ALIGN_TOP_LEFT, 2, 18);
+    lv_obj_align(*val, LV_ALIGN_TOP_LEFT, 4, 20);
     lv_label_set_text(*val, "-- / --");
     *bar = lv_bar_create(panel);
     lv_obj_set_style_bg_color(*bar, lv_color_hex(UI_MUTED), 0);
     lv_obj_set_style_bg_opa(*bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(*bar, 0, 0);
     lv_bar_set_range(*bar, 0, 100);
-    lv_obj_set_size(*bar, 148, 12);
-    lv_obj_align(*bar, LV_ALIGN_TOP_LEFT, 2, 44);
+    lv_obj_set_size(*bar, 132, 14);
+    lv_obj_align(*bar, LV_ALIGN_BOTTOM_LEFT, 4, -4);
     *pct = lv_label_create(panel);
     lv_obj_set_style_text_font(*pct, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(*pct, lv_color_hex(UI_INK), 0);
-    lv_obj_align(*pct, LV_ALIGN_TOP_RIGHT, -4, 46);
+    lv_obj_align(*pct, LV_ALIGN_BOTTOM_RIGHT, -6, -6);
     lv_label_set_text(*pct, "-%");
     return panel;
 }
@@ -297,7 +299,7 @@ void demo_balance_enter(void)
     s_state = BAL_WIFI_CONNECTING;
 
     s_scr = ui_pixel_screen_create("BALANCE");
-    // 截屏验证容器:内容收进 240x192,匹配截屏缓冲尺寸
+    // 截屏验证容器:240x192,内容整体收进来(截屏服务按容器渲染)
     lv_obj_t *content = lv_obj_create(s_scr);
     lv_obj_set_size(content, 240, 192);
     lv_obj_set_pos(content, 0, 0);
@@ -306,25 +308,23 @@ void demo_balance_enter(void)
     lv_obj_set_style_pad_all(content, 0, 0);
     lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_OFF);
     serial_screenshot_set_target(content);
-    build_block(content, "5H ROLLING", 46, &s_val5, &s_bar5, &s_pct5);
-    build_block(content, "7D WEEKLY", 120, &s_valw, &s_barw, &s_pctw);
 
-    s_status = lv_label_create(s_scr);
+    build_block(content, "5H ROLLING", 10, &s_val5, &s_bar5, &s_pct5);
+    build_block(content, "7D WEEKLY", 96, &s_valw, &s_barw, &s_pctw);
+
+    s_status = lv_label_create(content);
     lv_obj_set_width(s_status, 216);
     lv_obj_set_style_text_font(s_status, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_status, lv_color_hex(UI_SKY_DARK), 0);
-    lv_obj_align(s_status, LV_ALIGN_TOP_LEFT, 14, 238);
+    lv_obj_align(s_status, LV_ALIGN_TOP_LEFT, 4, 168);
     lv_label_set_text(s_status, s_status_text);
-    if (s_upd_label) lv_label_set_text_fmt(s_upd_label, "%s", s_upd_time);
 
+    s_upd_label = lv_label_create(content);
+    lv_obj_set_style_text_font(s_upd_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_upd_label, lv_color_hex(UI_INK), 0);
+    lv_obj_align(s_upd_label, LV_ALIGN_TOP_RIGHT, -6, 168);
+    lv_label_set_text(s_upd_label, s_upd_time);
 
-    // 右上角刷新时间(遵循仓库右上角状态位约定,避开白云区)
-    lv_obj_t *upd = lv_label_create(content);
-    lv_obj_set_style_text_font(upd, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(upd, lv_color_hex(UI_INK), 0);
-    lv_obj_align(upd, LV_ALIGN_TOP_LEFT, 160, 8);
-    lv_label_set_text(upd, "");
-    s_upd_label = upd;
     s_timer = lv_timer_create(tick, 250, NULL);
     lv_screen_load(s_scr);
 }

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # tools/balance_server.py -- LAN endpoint for the AI Passport balance page.
-# Delta-based rolling-window usage from ALL hermes agent databases (read-only).
+# Rolling-window GLM usage from ALL hermes databases. A background thread
+# samples deltas every 60s regardless of device polling, so the 5h/7d
+# windows stay continuous even when the badge is offline.
 import glob
 import json
 import os
 import sqlite3
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -13,6 +16,7 @@ PORT = 8765
 COEFFS = {"glm-5.3": (6.9, 1.7, 24.0)}
 DEFAULT_COEFF = (6.9, 1.7, 24.0)
 HIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".balance_history.json")
+SAMPLE_PERIOD = 60
 
 
 def points(model, inp, cached, outp):
@@ -66,42 +70,63 @@ def save_hist(h):
     os.replace(tmp, HIST_PATH)
 
 
-def take_sample():
-    h = load_hist()
-    now = time.time()
-    cur = {}
-    for key, model, inp, outp, cached, calls in db_rows():
-        cur[key] = [inp, outp, cached, calls]
-    last = h.get("last", {})
-    delta_pts = 0.0
-    delta_calls = 0
-    for k, v in cur.items():
-        pv = last.get(k)
-        if pv is None:
-            continue
-        d = [max(0, v[i] - pv[i]) for i in range(4)]
-        delta_calls += d[3]
-        delta_pts += points(k.rsplit("|", 1)[-1], d[0], d[2], d[1])
-    if last:
-        h["samples"].append([now, round(delta_pts, 2), delta_calls])
-        cutoff = now - 8 * 86400
-        h["samples"] = [s for s in h["samples"] if s[0] >= cutoff]
-    h["last"] = cur
-    h["updated"] = int(now)
-    save_hist(h)
+HIST_LOCK = threading.Lock()
 
-    def window(sec):
+
+def sample_once():
+    with HIST_LOCK:
+        h = load_hist()
+        now = time.time()
+        cur = {}
+        for key, model, inp, outp, cached, calls in db_rows():
+            cur[key] = [inp, outp, cached, calls]
+        last = h.get("last", {})
+        delta_pts = 0.0
+        delta_calls = 0
+        for k, v in cur.items():
+            pv = last.get(k)
+            if pv is None:
+                continue
+            d = [max(0, v[i] - pv[i]) for i in range(4)]
+            delta_calls += d[3]
+            delta_pts += points(k.rsplit("|", 1)[-1], d[0], d[2], d[1])
+        if last:
+            h["samples"].append([now, round(delta_pts, 2), delta_calls])
+            cutoff = now - 8 * 86400
+            h["samples"] = [s for s in h["samples"] if s[0] >= cutoff]
+        h["last"] = cur
+        h["updated"] = int(now)
+        save_hist(h)
+
+
+def sampler_loop():
+    while True:
+        try:
+            sample_once()
+        except Exception:
+            pass
+        time.sleep(SAMPLE_PERIOD)
+
+
+def window_stats(sec):
+    with HIST_LOCK:
+        h = load_hist()
+        now = time.time()
         pts = sum(s[1] for s in h["samples"] if s[0] >= now - sec)
         calls = sum(s[2] for s in h["samples"] if s[0] >= now - sec)
-        return round(pts, 1), calls
+        started = h["samples"][0][0] if h["samples"] else now
+    return round(pts, 1), calls, int(started)
 
-    p5, c5 = window(5 * 3600)
-    pw, cw = window(7 * 86400)
+
+def take_sample():
+    p5, c5, started = window_stats(5 * 3600)
+    pw, cw, _ = window_stats(7 * 86400)
     return {
-        "updated": int(now),
+        "updated": int(time.time()),
         "now_local": time.strftime("%H:%M"),
         "window_5h": {"points": p5, "calls": c5},
         "week": {"points": pw, "calls": cw},
+        "history_started": started,
         "note": "delta est. from local agent dbs",
     }
 
@@ -125,5 +150,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    take_sample()
+    sample_once()
+    threading.Thread(target=sampler_loop, daemon=True).start()
     HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
