@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#if defined(CONFIG_BT_ENABLED) && CONFIG_BT_ENABLED
 #include "host/ble_gap.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
@@ -258,3 +259,31 @@ void demo_ble_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         s_state = BLE_DEMO_FAILED;
     }
 }
+
+#else
+// --- BT 禁用构建:友好占位页(本分支为余额监控释放 DRAM) ---
+
+static lv_obj_t *s_scr;
+ 
+esp_err_t demo_ble_start(void) { return ESP_OK; }
+esp_err_t demo_ble_stop(void) { return ESP_OK; }
+ 
+void demo_ble_enter(void)
+{
+    s_scr = ui_pixel_screen_create("BLE");
+    ui_pixel_panel_create(s_scr, 12, 90, 216, 70, UI_PAPER);
+    lv_obj_t *label = lv_label_create(s_scr);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(UI_INK), 0);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 30, 112);
+    lv_label_set_text(label, "BLE disabled in this build");
+    lv_screen_load(s_scr);
+}
+ 
+void demo_ble_exit(void)
+{
+    if (s_scr) { lv_obj_delete(s_scr); s_scr = NULL; }
+}
+ 
+void demo_ble_key(bsp_btn_t btn, bsp_btn_ev_t ev) { (void)btn; (void)ev; }
+#endif

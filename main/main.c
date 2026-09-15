@@ -12,6 +12,7 @@
 #include "bsp_pins.h"      // 错误日志里要打印 BSP_LCD_* 引脚号
 #include "demo.h"
 #include "demo_navigation.h"
+#include "serial_screenshot.h"
 #include "ui_pixel.h"
 #include "lvgl.h"
 #include "esp_log.h"
@@ -194,6 +195,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
 
 void app_main(void) {
     ESP_LOGI(TAG, "FoloToy AI Passport BSP demo 启动");
+    serial_screenshot_init();   // 尽早预留截屏缓冲
     esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
     if (wakeup != ESP_SLEEP_WAKEUP_UNDEFINED) {
         ESP_LOGI(TAG, "休眠唤醒原因: %d", wakeup);
