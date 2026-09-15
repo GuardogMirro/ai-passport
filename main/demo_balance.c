@@ -250,6 +250,13 @@ esp_err_t demo_balance_stop(void)
     return ESP_OK;
 }
 
+static void fmt_pts(char *buf, int n, const char *prefix, double pts)
+{
+    int whole = (int)pts;
+    int tenth = (int)((pts - whole) * 10.0 + 0.5);
+    if (tenth >= 10) { whole += 1; tenth -= 10; }
+    snprintf(buf, n, "%s %d.%d", prefix, whole, tenth);
+}
 static void tick(lv_timer_t *timer)
 {
     (void)timer;
@@ -262,8 +269,11 @@ static void tick(lv_timer_t *timer)
     } else {
         lv_obj_set_style_text_color(s_status, lv_color_hex(UI_SKY_DARK), 0);
     }
-    lv_label_set_text_fmt(s_5h, "5h  %.1f / %d", s_pts_5h, NET_PLAN_5H);
-    lv_label_set_text_fmt(s_week, "7d  %.1f / %d", s_pts_week, NET_PLAN_WEEK);
+    char b5[32], bw[32];
+    fmt_pts(b5, sizeof(b5), "5h", s_pts_5h);
+    fmt_pts(bw, sizeof(bw), "7d", s_pts_week);
+    lv_label_set_text_fmt(s_5h, "%s / %d", b5, NET_PLAN_5H);
+    lv_label_set_text_fmt(s_week, "%s / %d", bw, NET_PLAN_WEEK);
 }
 
 void demo_balance_enter(void)
