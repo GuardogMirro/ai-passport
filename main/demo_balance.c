@@ -5,7 +5,11 @@
 #include "demo_radio.h"
 #include "bsp_display.h"
 #include "ui_pixel.h"
+#if __has_include("net_config.h")
 #include "net_config.h"
+#else
+#include "net_config.defaults.h"
+#endif
 
 #include "cJSON.h"
 #include "esp_event.h"
