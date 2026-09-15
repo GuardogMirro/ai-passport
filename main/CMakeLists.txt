@@ -11,6 +11,8 @@ idf_component_register(
          "demo_wifi.c"
          "demo_ble.c"
          "demo_low_power.c"
-    INCLUDE_DIRS "."
-    REQUIRES bsp bt esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash
+         "demo_balance.c"
+         "serial_screenshot.c"
+    INCLUDE_DIRS "." "../managed_components/lvgl__lvgl/src/draw/snapshot" "../managed_components/lvgl__lvgl/src/misc"
+    REQUIRES bsp bt esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash esp_http_client json
 )

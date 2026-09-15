@@ -12,6 +12,7 @@
 #include "bsp_pins.h"      // 错误日志里要打印 BSP_LCD_* 引脚号
 #include "demo.h"
 #include "demo_navigation.h"
+#include "serial_screenshot.h"
 #include "ui_pixel.h"
 #include "lvgl.h"
 #include "esp_log.h"
@@ -37,6 +38,8 @@ static const demo_entry_t DEMOS[] = {
       .key = demo_ble_key, .start = demo_ble_start, .stop = demo_ble_stop },
     { .name = "Low Power", .enter = demo_low_power_enter, .exit = demo_low_power_exit,
       .key = demo_low_power_key, .start = demo_low_power_start, .stop = demo_low_power_stop },
+    { .name = "Balance", .enter = demo_balance_enter, .exit = demo_balance_exit,
+      .key = demo_balance_key, .start = demo_balance_start, .stop = demo_balance_stop },
 };
 #define DEMO_COUNT (sizeof(DEMOS) / sizeof(DEMOS[0]))
 #define INPUT_QUEUE_DEPTH 8
@@ -192,6 +195,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
 
 void app_main(void) {
     ESP_LOGI(TAG, "FoloToy AI Passport BSP demo 启动");
+    serial_screenshot_init();   // 尽早预留截屏缓冲
     esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
     if (wakeup != ESP_SLEEP_WAKEUP_UNDEFINED) {
         ESP_LOGI(TAG, "休眠唤醒原因: %d", wakeup);
@@ -230,6 +234,7 @@ void app_main(void) {
     s_ok[4] = true;                                    // 页面内按需初始化并显示错误
     s_ok[5] = true;
     s_ok[6] = true;
+    s_ok[7] = true;                                   // Balance 页面内自行降级
 
     if (bsp_lvgl_lock(1000)) {
         enter_menu();
