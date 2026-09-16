@@ -43,3 +43,7 @@ esp_err_t demo_low_power_start(void); esp_err_t demo_low_power_stop(void);
 void demo_balance_enter(void); void demo_balance_exit(void);
 void demo_balance_key(bsp_btn_t btn, bsp_btn_ev_t ev);
 esp_err_t demo_balance_start(void); esp_err_t demo_balance_stop(void);
+
+// Settings page (generated from tools/ui_spec/pages/settings.json).
+void demo_settings_enter(void); void demo_settings_exit(void);
+void demo_settings_key(bsp_btn_t btn, bsp_btn_ev_t ev);

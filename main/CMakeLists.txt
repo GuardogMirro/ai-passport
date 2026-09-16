@@ -13,6 +13,7 @@ idf_component_register(
          "demo_low_power.c"
          "demo_balance.c"
          "serial_screenshot.c"
+         "demo_settings.c"
          "../assets/fonts/ui_font_cjk_12.c"
          "../assets/fonts/ui_font_cjk_24.c"
     INCLUDE_DIRS "." "../managed_components/lvgl__lvgl/src/draw/snapshot" "../managed_components/lvgl__lvgl/src/misc"

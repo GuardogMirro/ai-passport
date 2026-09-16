@@ -6,3 +6,4 @@ managed_components/
 .idea/
 main/net_config.h
 tools/.balance_history.json
+__pycache__/

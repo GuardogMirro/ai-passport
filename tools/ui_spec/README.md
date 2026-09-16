@@ -2,78 +2,99 @@
   <a href="README.zh_CN.md">简体中文</a> · <strong>English</strong>
 </p>
 
-# tools/ui_spec — declarative page descriptions and pixel-faithful previews
+# tools/ui_spec — describe a page, preview it, generate its firmware
 
-A page is described once, in JSON, and rendered on the host into a PNG that
-matches what the panel shows. The preview is the review surface: layout is
-checked on screen in a second, before any firmware build, and the same file is
-the input for code generation.
+A page is described once, in JSON. `render.py` draws it into a PNG that matches
+the panel, and `gen_page.py` translates the same description into
+`main/demo_<page>.c` plus its registration. Layout lives in `layout.py` and
+nowhere else, so the preview and the firmware are two renderings of one
+description rather than two implementations that can drift.
 
-## Why a preview can be trusted
-
-`render.py` draws with the same palette as `main/ui_pixel.h`, the same panel
-geometry as `ui_pixel_panel_create` (4px ink border, 7px padding, ink shadow at
-+5/+6), the same font files the device uses, and it quantizes every color to
-RGB565 the way the ST7789 stores it. Measured against a real serial capture of
-the balance page: **128 of 46080 pixels differ (0.28%)**, all of them on
-anti-aliased bar corners plus one glyph rasterization detail — no layout error.
-Text x positions and ink counts match exactly.
-
-Reproduce:
+## Loop
 
 ```sh
-python tools/ui_spec/render.py tools/ui_spec/pages/balance.json /tmp/preview.png \
+# 1. describe the page
+$EDITOR tools/ui_spec/pages/<page>.json
+
+# 2. see it (whole screen, or just the capture container)
+python tools/ui_spec/render.py tools/ui_spec/pages/<page>.json /tmp/<page>.png \
+  --font-dir /tmp/fusion12
+python tools/ui_spec/render.py tools/ui_spec/pages/<page>.json /tmp/<page>_cap.png \
   --font-dir /tmp/fusion12 --capture
-python tools/capture_screen.py COM5 /tmp/device.png   # device must show that page
-python tools/ui_spec/diff_capture.py /tmp/preview.png /tmp/device.png
+
+# 3. gate the glyphs, then generate and register the page
+python tools/fonttools/check_font_coverage.py tools/fonttools/charset_body.txt \
+  main/*.c tools/ui_spec/pages/*.json
+python tools/ui_spec/gen_page.py tools/ui_spec/pages/<page>.json \
+  --out main/demo_<page>.c --register --repo . --force
+
+# 4. build, flash, capture, and diff against the preview
+python tools/capture_screen.py COM5 /tmp/device.png
+python tools/ui_spec/diff_capture.py /tmp/<page>_cap.png /tmp/device.png --max-pct 1.0
 ```
 
 `--font-dir` points at an unpacked Fusion Pixel 12px family
 (`tools/fonttools/fetch_asset.mjs` downloads it). `--capture` renders only the
-240x192 screenshot container over black, which is what `capture_screen.py`
-returns; without it the full 240x320 screen is drawn, including sky, cloud,
-grass and the title plate.
+240x192 container over black, which is what `capture_screen.py` returns.
 
 ## Archetypes
 
-A spec names an archetype and its content; geometry is derived here, so
-descriptions stay declarative.
+A spec names an archetype and its content; `layout.py` derives the geometry.
+Coordinates are container-local, matching how the firmware parents children to
+the capture container.
 
-| Archetype | Shape | Used by |
+| Archetype | Shape | Example |
 | --- | --- | --- |
-| `dashboard` | stacked metric blocks: 12px label, 24px hero value, bar with a pace mark; then a status row | balance page |
-| `list` | grouped rows in the iOS Settings pattern: section title, rows of label-left / value-right / chevron, hairline separators | settings-style menus |
+| `dashboard` | metric blocks: 12px label, 24px hero value, bar with pace mark; then a status row | `pages/balance.json` |
+| `list` | grouped rows in the iOS Settings pattern: section title, label left, value right, `>` chevron, hairline separators, movable cursor | `pages/settings.json` |
 
-Coordinates in a spec are container-local, matching how the firmware parents
-children to the 240x192 capture container.
+## Measured fidelity
+
+Against a real capture of the hand-written balance page: **154 of 46080 pixels
+differ (0.33%)**. Against the settings page generated end-to-end by this tool
+(spec -> C -> build -> flash -> capture): **0 of 46080 pixels differ (0.00%)**.
+Text x positions and ink counts match exactly; the balance-page residual is
+LVGL anti-aliasing rounded bar corners into the panel color (the renderer keeps
+them hard-edged — modelling the blend made the diff worse) plus one glyph
+detail. `diff_capture.py --max-pct` turns that floor into a gate: a layout
+error shows up as a large contiguous band, far above it.
+
+## What the generator encodes
+
+Rules taken from `AGENTS.md`, the agent guide and `main.c`, so generated pages
+behave like hand-written ones:
+
+- `enter`/`exit` run with the LVGL lock held by `main.c`; `key` does **not**, so
+  generated key handlers take `bsp_lvgl_lock()` themselves.
+- `exit` clears the screenshot target, deletes the screen and nulls pointers.
+  Static pages own no tasks or timers; a spec that needs them must stop them
+  before the delete.
+- The OK long-press back gesture stays `main.c`'s and is never re-implemented.
+- The page registers its capture container with `serial_screenshot_set_target`,
+  which is what makes step 4 possible.
+- `--register` patches `main/demo.h`, `main/CMakeLists.txt` and `main/main.c`:
+  a `DEMOS[]` entry, the matching positional `s_ok[]` slot (an unset slot shows
+  `[FAIL]` and blocks entry), the mascot moved into the grid's free cell when
+  `DEMO_COUNT` is odd, and CJK-aware menu label fonts.
 
 ## Files
 
 | File | Role |
 | --- | --- |
-| `render.py` | spec → PNG (archetype expansion, theme geometry, RGB565 quantization, calibrated text baseline) |
-| `diff_capture.py` | rendered PNG vs device capture → mismatch rate, 8px density map, color pairs, mismatch bands |
+| `layout.py` | theme constants and archetype expansion — the only place geometry is computed |
+| `render.py` | layout → PNG (RGB565 quantized, real font files, calibrated baselines) |
+| `gen_page.py` | layout → `main/demo_<page>.c`, plus `--register` |
+| `diff_capture.py` | rendered PNG vs device capture → rate, density map, color pairs, bands |
 | `pages/*.json` | page descriptions |
 
-Text baselines carry a measured per-face correction (`dy_corr` in `FACES`),
+Text baselines carry a measured per-face correction (`dy_corr` in `layout.FACES`),
 derived from device captures and consistent with the faces' dominant `.ofs_y`
-(-2 at 12px, -4 at 24px). Re-measure it with `diff_capture.py` after changing
-fonts.
-
-## Before rendering or building
-
-Screen text must exist in the compiled charset, otherwise the panel draws a
-placeholder box:
-
-```sh
-python tools/fonttools/check_font_coverage.py tools/fonttools/charset_body.txt \
-  main/*.c tools/ui_spec/pages/*.json
-```
-
-The gate reads `.json` specs as well as C sources.
+(-2 at 12px, -4 at 24px). Re-measure with `diff_capture.py` after changing fonts.
 
 ## Not built yet
 
-The spec → C generator (emitting `main/demo_<page>.c` plus `DEMOS[]`
-registration) and wiring `diff_capture.py` into CI. Today the preview and the
-gate are the working parts; firmware pages are still written by hand.
+Data binding (spec placeholders fed by a fetch task), row actions and sub-pages,
+NVS-backed values, and wiring `diff_capture.py` into CI. Generated pages are
+static: their text and bar values come from the spec at generation time. The
+balance page is still hand-written because it owns Wi-Fi, HTTP and a poll task;
+migrating it needs the data-binding layer first.
