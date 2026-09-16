@@ -1,155 +1,206 @@
 #!/usr/bin/env python3
 # tools/balance_server.py -- LAN endpoint for the AI Passport balance page.
-# Rolling-window GLM usage from ALL hermes databases. A background thread
-# samples deltas every 60s regardless of device polling, so the 5h/7d
-# windows stay continuous even when the badge is offline.
-import glob
+#
+# v2 (2026-09-15): official quota source. Backend design mirrors the user's
+# own DSH balance card (@local/dsh-balance-monitor, host half):
+#   - upstream: GET https://open.bigmodel.cn/api/monitor/usage/quota/limit
+#     (Bearer ZHIPU_API_KEY) -- the same live-verified endpoint the sidebar
+#     card uses. No local-db estimation, no reverse-engineered gateways.
+#   - 5 min TTL cache, 15 s upstream timeout, never throws to the caller.
+#   - key resolved from ~/.dsh/.credentials.yaml (ZHIPU_API_KEY), env
+#     fallback; the key never appears in logs or responses.
+#   - stale-serve: on upstream failure the last good payload is re-served
+#     with "stale": true so the badge keeps showing numbers.
+#
+# Response (GET /balance[?refresh=1]):
+#   { ok, updated, now_local, source, level, stale,
+#     window_5h: {used, limit, pct, reset_ms, reset_local} | null,
+#     week:      {used, limit, pct, reset_ms, reset_local} | null,
+#     windows: [ {kind, unit, number, used, limit, pct, reset_ms, reset_local} ],
+#     diag: {http, age_s} }
+#
+# reset_local formatting follows the card's semantics: hour windows "HH:MM",
+# weekly (and >=48h) windows always "MM-dd HH:MM".
 import json
 import os
-import sqlite3
+import re
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-HERMES_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "hermes")
-PORT = 8765
-COEFFS = {"glm-5.3": (6.9, 1.7, 24.0)}
-DEFAULT_COEFF = (6.9, 1.7, 24.0)
-HIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".balance_history.json")
-SAMPLE_PERIOD = 60
+PORT = int(os.environ.get("BALANCE_PORT", "8765"))
+UPSTREAM_URL = "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
+KEY_NAME = "ZHIPU_API_KEY"
+TTL_S = 5 * 60
+TIMEOUT_S = 15
 
-
-def points(model, inp, cached, outp):
-    ci, cc, co = COEFFS.get((model or "").lower(), DEFAULT_COEFF)
-    return (inp * ci + cached * cc + outp * co) / 10000.0
+_LOCK = threading.Lock()
+_CACHE = None  # {"at": epoch, "payload": {...}} last good official payload
 
 
-def db_paths():
-    paths = []
-    main = os.path.join(HERMES_DIR, "state.db")
-    if os.path.exists(main):
-        paths.append(main)
-    paths += sorted(glob.glob(os.path.join(HERMES_DIR, "profiles", "*", "state.db")))
-    return paths
-
-
-def db_rows():
-    rows = []
-    for p in db_paths():
-        tag = os.path.basename(os.path.dirname(p)) or "main"
-        try:
-            con = sqlite3.connect("file:" + p + "?mode=ro", uri=True, timeout=3)
-            try:
-                cur = con.cursor()
-                for sid, model, inp, outp, cached, calls in cur.execute(
-                    "select session_id, model, sum(input_tokens), sum(output_tokens),"
-                    " sum(cache_read_tokens), sum(api_call_count)"
-                    " from session_model_usage group by session_id, model"
-                ):
-                    rows.append((tag + "|" + str(sid) + "|" + str(model), model,
-                                 inp or 0, outp or 0, cached or 0, calls or 0))
-            finally:
-                con.close()
-        except Exception:
-            pass
-    return rows
-
-
-def load_hist():
+def resolve_key():
+    """Key from ~/.dsh/.credentials.yaml, env fallback. Never logged."""
+    path = os.path.join(os.path.expanduser("~"), ".dsh", ".credentials.yaml")
     try:
-        with open(HIST_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"^([A-Z_]+):\s*(\S+)", line)
+                if m and m.group(1) == KEY_NAME:
+                    return m.group(2).strip("\"'")
     except Exception:
-        return {"samples": [], "last": {}}
+        pass
+    env = os.environ.get(KEY_NAME)
+    return env if env else None
 
 
-def save_hist(h):
-    tmp = HIST_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(h, f)
-    os.replace(tmp, HIST_PATH)
+def fmt_reset(ms, with_date):
+    try:
+        t = time.localtime(ms / 1000.0)
+    except Exception:
+        return ""
+    hm = "%02d:%02d" % (t.tm_hour, t.tm_min)
+    if with_date or (ms / 1000.0 - time.time()) >= 48 * 3600:
+        return "%02d-%02d %s" % (t.tm_mon, t.tm_mday, hm)
+    return hm
 
 
-HIST_LOCK = threading.Lock()
+def theory_pct(unit, number, reset_ms, now_ms=None):
+    """Pace mark semantics from the PC balance card: theoretical usage =
+    elapsed window time ceil-rounded to ticks (a started tick counts);
+    1h ticks for hour windows, 12h ticks for week windows.
+    E.g. 5h window 49min in -> 1/5 = 20%; exactly 2h in -> 2/5 = 40%."""
+    if unit == 3:
+        total, tick = number * 3600_000, 3600_000
+    elif unit == 6:
+        total, tick = number * 7 * 24 * 3600_000, 12 * 3600_000
+    else:
+        return None
+    if not isinstance(reset_ms, (int, float)):
+        return None
+    if now_ms is None:
+        now_ms = time.time() * 1000
+    elapsed = total - (reset_ms - now_ms)
+    elapsed = max(0, min(total, elapsed))
+    ticks = -(-elapsed // tick)
+    return int(ticks * tick * 100 // total)
 
 
-def sample_once():
-    with HIST_LOCK:
-        h = load_hist()
-        now = time.time()
-        cur = {}
-        for key, model, inp, outp, cached, calls in db_rows():
-            cur[key] = [inp, outp, cached, calls]
-        last = h.get("last", {})
-        delta_pts = 0.0
-        delta_calls = 0
-        for k, v in cur.items():
-            pv = last.get(k)
-            if pv is None:
-                continue
-            d = [max(0, v[i] - pv[i]) for i in range(4)]
-            delta_calls += d[3]
-            delta_pts += points(k.rsplit("|", 1)[-1], d[0], d[2], d[1])
-        if last:
-            h["samples"].append([now, round(delta_pts, 2), delta_calls])
-            cutoff = now - 8 * 86400
-            h["samples"] = [s for s in h["samples"] if s[0] >= cutoff]
-        h["last"] = cur
-        h["updated"] = int(now)
-        save_hist(h)
+def fetch_upstream(key):
+    """One official call. Returns (ok, http_status, limits_list, level)."""
+    req = urllib.request.Request(
+        UPSTREAM_URL, headers={"Authorization": "Bearer " + key,
+                               "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as r:
+            body = json.loads(r.read().decode("utf-8"))
+            if body.get("success") is not True or not isinstance(
+                    body.get("data", {}).get("limits"), list):
+                return False, r.status, None, None
+            limits = [L for L in body["data"]["limits"]
+                      if L.get("type") == "CREDIT_LIMIT"]
+            return True, r.status, limits, body["data"].get("level", "")
+    except Exception:
+        return False, 0, None, None
 
 
-def sampler_loop():
-    while True:
-        try:
-            sample_once()
-        except Exception:
-            pass
-        time.sleep(SAMPLE_PERIOD)
-
-
-def window_stats(sec):
-    with HIST_LOCK:
-        h = load_hist()
-        now = time.time()
-        pts = sum(s[1] for s in h["samples"] if s[0] >= now - sec)
-        calls = sum(s[2] for s in h["samples"] if s[0] >= now - sec)
-        started = h["samples"][0][0] if h["samples"] else now
-    return round(pts, 1), calls, int(started)
-
-
-def take_sample():
-    p5, c5, started = window_stats(5 * 3600)
-    pw, cw, _ = window_stats(7 * 86400)
+def window_obj(L):
+    unit = L.get("unit")
+    number = L.get("number", 0)
+    reset_ms = L.get("nextResetTime")
+    with_date = unit == 6  # weekly windows always carry the date
     return {
+        "kind": ("5h" if unit == 3 else ("7d" if unit == 6 else "u%s" % unit)),
+        "unit": unit,
+        "number": number,
+        "used": L.get("currentValue", 0),
+        "limit": L.get("usage", 0),
+        "pct": L.get("percentage", 0),
+        "theory_pct": theory_pct(unit, number, reset_ms),
+        "reset_ms": reset_ms,
+        "reset_local": fmt_reset(reset_ms, with_date) if isinstance(reset_ms, (int, float)) else "",
+    }
+
+
+def build_payload(limits, level):
+    w5 = None
+    wk = None
+    windows = []
+    for L in limits:
+        w = window_obj(L)
+        windows.append(w)
+        if w["unit"] == 3 and w5 is None:
+            w5 = w
+        elif w["unit"] == 6 and wk is None:
+            wk = w
+    return {
+        "ok": True,
         "updated": int(time.time()),
         "now_local": time.strftime("%H:%M"),
-        "window_5h": {"points": p5, "calls": c5},
-        "week": {"points": pw, "calls": cw},
-        "history_started": started,
-        "note": "delta est. from local agent dbs",
+        "source": "official",
+        "level": level,
+        "stale": False,
+        "window_5h": w5,
+        "week": wk,
+        "windows": windows,
     }
+
+
+def get_status(force):
+    """Cache-first official status; stale-serve on failure."""
+    global _CACHE
+    key = resolve_key()
+    if key is None:
+        return {"ok": False, "error": KEY_NAME + " not configured",
+                "updated": int(time.time()), "now_local": time.strftime("%H:%M")}
+    with _LOCK:
+        if (not force and _CACHE is not None
+                and time.time() - _CACHE["at"] < TTL_S):
+            p = dict(_CACHE["payload"])
+            p["diag"] = {"http": 200, "age_s": int(time.time() - _CACHE["at"])}
+            return p
+    ok, status, limits, level = fetch_upstream(key)
+    with _LOCK:
+        if ok:
+            payload = build_payload(limits, level)
+            _CACHE = {"at": time.time(), "payload": payload}
+            payload["diag"] = {"http": status, "age_s": 0}
+            return payload
+        if _CACHE is not None:
+            p = dict(_CACHE["payload"])
+            p["stale"] = True
+            p["diag"] = {"http": status,
+                         "age_s": int(time.time() - _CACHE["at"])}
+            return p
+        return {"ok": False, "error": "upstream HTTP %s" % status,
+                "updated": int(time.time()), "now_local": time.strftime("%H:%M"),
+                "diag": {"http": status, "age_s": None}}
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path.split("?")[0] != "/balance":
-            self.send_response(404); self.end_headers(); return
+        path, _, query = self.path.partition("?")
+        if path != "/balance":
+            self.send_response(404)
+            self.end_headers()
+            return
+        force = "refresh=1" in (query or "")
         try:
-            body = json.dumps(take_sample()).encode()
+            body = json.dumps(get_status(force)).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(body)
         except Exception as e:
-            self.send_response(500); self.end_headers()
+            self.send_response(500)
+            self.end_headers()
             self.wfile.write(str(e).encode())
+
     def log_message(self, *a):
         pass
 
 
 if __name__ == "__main__":
-    sample_once()
-    threading.Thread(target=sampler_loop, daemon=True).start()
-    HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    threading.Thread(target=get_status, args=(True,), daemon=True).start()
+    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
