@@ -35,7 +35,10 @@ static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
     ip_event_got_ip_t *evt = (ip_event_got_ip_t *)data;
     ESP_LOGI(TAG, "got ip " IPSTR, IP2STR(&evt->ip_info.ip));
     if (!s_sntp_init) {
-        esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("ntp.aliyun.com");
+        // 多服务器冗余:单 aliyun 源偶发慢(>6s)时,首次取数在时间未同步下
+        // 强行 TLS,证书验证必失败,页面报"网络或服务错误"(2026-09-16 排障)。
+        esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(3,
+            ESP_SNTP_SERVER_LIST("ntp.aliyun.com", "cn.pool.ntp.org", "time.windows.com"));
         esp_netif_sntp_init(&cfg);
         s_sntp_init = true;
     }
