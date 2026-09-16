@@ -13,7 +13,16 @@
 #define UI_RED        0xE43B2F
 #define UI_MUTED      0xD9E7EC
 
+/* 中文字面:由 lv_font_conv 从 Fusion Pixel 12px(OFL-1.1)生成,编译进 flash
+ * 的 const 数组,零堆开销(本机无 PSRAM、DRAM 紧张)。
+ * body = 12px 原生(正文/标签);title = 24px(12px 设计的整数倍放大,标题/主数值)。
+ * 两者的 Latin 与数字由 Montserrat 兜底(见 assets/fonts/README.md)。 */
+const lv_font_t *ui_pixel_font_body(void);
+const lv_font_t *ui_pixel_font_title(void);
+
 lv_obj_t *ui_pixel_screen_create(const char *title);
+/* 同 ui_pixel_screen_create,但标题牌用指定字面(中文标题传 ui_pixel_font_title())。 */
+lv_obj_t *ui_pixel_screen_create_font(const char *title, const lv_font_t *font);
 lv_obj_t *ui_pixel_panel_create(lv_obj_t *parent, int x, int y, int w, int h,
                                 uint32_t color);
 lv_obj_t *ui_pixel_label(lv_obj_t *parent, const char *text,

@@ -1,0 +1,31 @@
+{
+  "page": "balance",
+  "type": "dashboard",
+  "title": "余额",
+  "title_font": "cjk24",
+  "capture": { "x": 0, "y": 48, "w": 240, "h": 192 },
+  "top": 8,
+  "block_height": 78,
+  "gap": 6,
+  "metrics": [
+    {
+      "label": "5小时窗 重置 13:19",
+      "value": "2% / 60%",
+      "pct": 2,
+      "mark": 60,
+      "fill": "GRASS"
+    },
+    {
+      "label": "7天窗 重置 09-21 22:38",
+      "value": "13% / 21%",
+      "pct": 13,
+      "mark": 21,
+      "fill": "SKY"
+    }
+  ],
+  "status": {
+    "left": "在线 max",
+    "left_color": "GRASS_DARK",
+    "right": "更新 10:31"
+  }
+}
