@@ -358,10 +358,12 @@ void demo_balance_enter(void)
     s_state = BAL_WIFI_CONNECTING;
 
     s_scr = ui_pixel_screen_create_font("余额", ui_pixel_font_title());
-    // 截屏验证容器:240x192,内容整体收进来(截屏服务按容器渲染)
+    // 截屏验证容器:240x192,内容整体收进来(截屏服务按容器渲染)。
+    // 起点 y48:标题牌占 y8-41、其投影到 y45,内容必须从牌下开始,否则第一张
+    // 面板会盖住标题牌(v3~v6 一直如此,屏上从未显示过页面标题)。
     lv_obj_t *content = lv_obj_create(s_scr);
     lv_obj_set_size(content, 240, 192);
-    lv_obj_set_pos(content, 0, 0);
+    lv_obj_set_pos(content, 0, 48);
     lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(content, 0, 0);
     lv_obj_set_style_pad_all(content, 0, 0);

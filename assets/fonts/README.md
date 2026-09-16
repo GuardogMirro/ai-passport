@@ -1,46 +1,66 @@
-# CJK 像素字面（assets/fonts）
+<p align="right">
+  <a href="README.zh_CN.md">简体中文</a> · <strong>English</strong>
+</p>
 
-设备上屏的中文由这两个编译进固件的字面提供；Latin 与数字由 Montserrat 兜底。
+# CJK Pixel Font Faces
 
-## 文件与命名
+Chinese text on the device is rendered by these two faces, compiled into the
+firmware. Latin letters and digits fall back to Montserrat.
 
-| 文件 | 符号 | 字号 | 用途 |
+## Files and naming
+
+| File | Symbol | Size | Use |
 | --- | --- | --- | --- |
-| `ui_font_cjk_12.c` | `ui_font_cjk_12` | 12px | 正文、标签、状态行 —— `ui_pixel_font_body()` |
-| `ui_font_cjk_24.c` | `ui_font_cjk_24` | 24px（12px 设计的整数倍放大） | 标题、主数值 —— `ui_pixel_font_title()` |
+| `ui_font_cjk_12.c` | `ui_font_cjk_12` | 12px | body text, labels, status line — `ui_pixel_font_body()` |
+| `ui_font_cjk_24.c` | `ui_font_cjk_24` | 24px (integer 2x of the 12px design) | titles, hero numbers — `ui_pixel_font_title()` |
 
-命名规则：`ui_font_cjk_<px>.c`，符号与文件同名。两者都是 `lv_font_conv` 生成的
-`const` 数据（位图 + 字形表 + cmap），留在 flash，**不占堆**——本机无 PSRAM、
-DRAM 紧张，所以不走运行时 `.bin` 加载（那会按字形数在堆上建表）。
+Naming: `ui_font_cjk_<px>.c`, and the symbol matches the file name. Both are
+`lv_font_conv` output (bitmaps + glyph tables + cmap) kept as `const` data in
+flash, so they cost **zero heap**. This board has no PSRAM and little spare
+internal DRAM; runtime `.bin` font loading is avoided because it builds tables
+in heap proportional to the glyph count.
 
-## 集成方式
+## Integration
 
-- `main/CMakeLists.txt` 的 `SRCS` 引用这两个 `.c`。
-- 应用代码只通过 `main/ui_pixel.h` 的 `ui_pixel_font_body()` /
-  `ui_pixel_font_title()` 取字面，不直接 extern 符号（主题层单一入口）。
-- 中文屏标题用 `ui_pixel_screen_create_font(title, ui_pixel_font_title())`；
-  纯 ASCII 标题继续用 `ui_pixel_screen_create(title)`。
+- `main/CMakeLists.txt` lists both `.c` files in `SRCS`.
+- Application code takes faces only through `ui_pixel_font_body()` and
+  `ui_pixel_font_title()` in `main/ui_pixel.h` (one theme-layer entry point);
+  it does not extern the symbols directly.
+- For a Chinese screen title use
+  `ui_pixel_screen_create_font(title, ui_pixel_font_title())`. ASCII-only titles
+  keep using `ui_pixel_screen_create(title)`.
 
-## 字符集
+## Charset
 
-ASCII `0x20-0x7E` + GB2312 一级字表 3755 字 + 常用中文标点 = **3893 字**。
-清单：`tools/fonttools/charset_body.txt`。
+4505 glyphs, listed in `tools/fonttools/charset_body.txt`. Requested set:
+ASCII `0x20-0x7E`, GB2312 rows 1-9 (682 chars: fullwidth punctuation such as
+U+FF0C and U+FF1A, fullwidth alphanumerics, unit symbols), GB2312 level 1
+(3755 chars), plus a few extras — 4538 in total. The source font covers 4505 of
+them; the 33 uncovered ones are math symbols (U+2208, U+2211, U+221A, U+2264 and
+neighbours) that no UI string needs, and `emit_charset.mjs` drops them by
+measuring the font instead of keeping a hand-written exclusion list.
 
-上屏前用门禁核对覆盖，缺字在编译前报出，而不是在屏上显示方框：
+Check coverage before building, so a missing glyph is reported as an error
+instead of showing up as a placeholder box on the panel:
 
 ```sh
 python tools/fonttools/check_font_coverage.py tools/fonttools/charset_body.txt main/*.c
 ```
 
-## 来源与授权
+## Source and license
 
-- 字源：**Fusion Pixel 12px Monospaced zh_hans**，v2026.09.01，仓库
-  `TakWolf/fusion-pixel-font`，**SIL Open Font License 1.1**（全文见同目录 `OFL.txt`）。
-- 选型实测（2026-09-16）：Ark Pixel 的 10px/16px 是精简字集，对本字符集只覆盖
-  3721/3895，缺「即 势 执 悠 惑」等 174 个 GB2312 一级字；Ark/Fusion 的 12px 才是
-  全字集。Fusion Pixel 12px 覆盖 3893/3895（仅缺 `✓ ✗` 两个装饰符，已从字符集剔除）。
-- 系统字体（黑体/宋体/雅黑）为微软授权、不可再分发，故不用于本仓库。
+- Source font: **Fusion Pixel 12px Monospaced zh_hans**, v2026.09.01, from
+  `TakWolf/fusion-pixel-font`, under the **SIL Open Font License 1.1** (full
+  text in `OFL.txt` beside this file).
+- Selection was measured on 2026-09-16 rather than assumed: Ark Pixel 10px and
+  16px are reduced sets covering 3721 of 3895 of the then-charset (174 GB2312
+  level-1 chars absent, including U+5373, U+52BF, U+6267, U+60A0, U+60D1), and
+  the union of all seven Ark Pixel 12px language variants also stops at 3721.
+  Fusion Pixel 12px covers everything except the math symbols above.
+- Windows system fonts (SimHei, SimSun, YaHei) are Microsoft-licensed and not
+  redistributable, so they are not used here.
 
-## 再生成
+## Regeneration
 
-见 `tools/fonttools/README.md`（一条命令链，约 1 分钟；需要 node + `npm i lv_font_conv`）。
+See `tools/fonttools/README.md`: one command chain, about a minute, needs
+Node.js and `npm i lv_font_conv`.
