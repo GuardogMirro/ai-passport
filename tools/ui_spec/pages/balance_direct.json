@@ -1,0 +1,32 @@
+{
+  "page": "balance_direct",
+  "type": "dashboard",
+  "title": "余额直连",
+  "data": { "kind": "glm_quota", "poll_ms": 300000 },
+  "samples": {
+    "w5.pct": 2, "w5.theo": 60, "w5.reset": "13:19",
+    "wk.pct": 13, "wk.theo": 21, "wk.reset": "09-21 22:38",
+    "state": "在线 max", "now_local": "10:31"
+  },
+  "capture": { "x": 0, "y": 48, "w": 240, "h": 192 },
+  "top": 8,
+  "block_height": 78,
+  "gap": 6,
+  "metrics": [
+    {
+      "label": "5小时窗 重置 {{w5.reset}}",
+      "value": "{{w5.pct}}% / {{w5.theo}}%",
+      "pct": "{{w5.pct}}",
+      "mark": "{{w5.theo}}",
+      "fill": "GRASS"
+    },
+    {
+      "label": "7天窗 重置 {{wk.reset}}",
+      "value": "{{wk.pct}}% / {{wk.theo}}%",
+      "pct": "{{wk.pct}}",
+      "mark": "{{wk.theo}}",
+      "fill": "SKY"
+    }
+  ],
+  "status": { "left": "{{state}}", "right": "更新 {{now_local}}" }
+}

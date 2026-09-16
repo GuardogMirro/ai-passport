@@ -1,4 +1,4 @@
-# --- 目标芯片 ---
+﻿# --- 目标芯片 ---
 CONFIG_IDF_TARGET="esp32c3"
 # 注:ESP32-C3 无 PSRAM,故不设 CONFIG_SPIRAM。
 
@@ -44,3 +44,4 @@ CONFIG_LV_USE_SNAPSHOT=y
 
 # --- Balance feature branch: free DRAM for screenshot buffer (BLE demo disabled) ---
 CONFIG_BT_ENABLED=n
+

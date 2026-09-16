@@ -14,6 +14,8 @@ Coordinate model (identical to the firmware's):
     which is where LVGL resolves both alignment and lv_obj_set_pos.
 """
 
+import json
+
 PALETTE = {
     "SKY": 0x1689E8, "SKY_DARK": 0x0872C9, "INK": 0x17202A, "PAPER": 0xF4F4EA,
     "GRASS": 0x82BE2D, "GRASS_DARK": 0x55951D, "YELLOW": 0xFFD928,
@@ -54,6 +56,25 @@ def content_box(panel):
     """A panel's content area, in container coordinates."""
     return (panel["x"] + CONTENT_INSET, panel["y"] + CONTENT_INSET,
             panel["w"] - 2 * CONTENT_INSET, panel["h"] - 2 * CONTENT_INSET)
+
+
+def as_int(v, default=0):
+    """Numeric field that may be a {{placeholder}} string in generator mode:
+    substituted ints pass through, placeholders return the default."""
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, int):
+        return v
+    if isinstance(v, str):
+        try:
+            return int(v)
+        except ValueError:
+            return default
+    return default
+
+
+def is_placeholder(v):
+    return isinstance(v, str) and v.startswith("{{")
 
 
 def resolve(align, dx, dy, box, w, h):
@@ -98,20 +119,27 @@ def expand_dashboard(spec):
         bar_h = m.get("bar_height", 14)
         bar_w = m.get("bar_width", 132)
         bar_dy = m.get("bar_dy", -3)
-        panel["children"].append({
+        pct_raw = m.get("pct", 0)
+        mark_raw = m.get("mark")
+        bar_node = {
             "op": "bar", "var": "bar%d" % i, "parent": panel["var"],
             "align": "BOTTOM_LEFT", "dx": 4, "dy": bar_dy, "w": bar_w, "h": bar_h,
             "radius": m.get("radius", 7), "track": "MUTED",
-            "fill": m.get("fill", "GRASS"), "pct": int(m.get("pct", 0))})
-        mark = m.get("mark")
+            "fill": m.get("fill", "GRASS"), "pct": as_int(pct_raw)}
+        if is_placeholder(pct_raw):
+            # remember which window this bar binds to (w5/wk) for the generator
+            bar_node["bind"] = pct_raw.strip("{} ").split(".")[0]
+        panel["children"].append(bar_node)
+        mark = mark_raw
         if mark is not None:
             # bar top inside the content box, so the mark shares the bar's rows
             bar_top = cb[3] + bar_dy - bar_h
-            mx = 4 + int(mark) * bar_w // 100
+            ph = is_placeholder(mark)
+            mx = 4 if ph else 4 + as_int(mark) * bar_w // 100
             panel["children"].append({
                 "op": "rect", "var": "mk%d" % i, "parent": panel["var"],
                 "x": min(mx, 4 + bar_w - 2), "y": bar_top, "w": 2, "h": bar_h,
-                "color": "INK"})
+                "color": "INK", "hidden": ph})
         nodes.append(panel)
 
     st = spec.get("status")
@@ -224,13 +252,46 @@ def screen_chrome(spec):
     return nodes
 
 
-def expand(spec):
-    """spec -> {archetype, capture, title, chrome, nodes, nav}."""
+def _subst_text(s, samples):
+    for k, v in samples.items():
+        s = s.replace("{{%s}}" % k, str(v))
+    return s
+
+
+def _substitute_spec(spec):
+    """Preview mode: replace placeholders in a spec copy with sample values,
+    BEFORE expansion (the expanders need pct/mark as ints)."""
+    sp = json.loads(json.dumps(spec))
+    s = sp.get("samples", {})
+    if not s:
+        return sp
+    for m in sp.get("metrics", []):
+        for f in ("pct", "mark"):
+            v = m.get(f)
+            if isinstance(v, str):
+                m[f] = int(s.get(v.strip("{} "), 0))
+        for f in ("label", "value"):
+            if isinstance(m.get(f), str):
+                m[f] = _subst_text(m[f], s)
+    st = sp.get("status")
+    if isinstance(st, dict):
+        for f in ("left", "right"):
+            if isinstance(st.get(f), str):
+                st[f] = _subst_text(st[f], s)
+    return sp
+
+
+def expand(spec, samples=True):
+    """spec -> {archetype, capture, title, chrome, nodes, nav}.
+
+    Pass samples=False to keep {{key}} placeholders in place (the code
+    generator does this so it can bind them at runtime); spec["samples"]
+    supplies the preview values."""
     archetype = spec.get("type", "dashboard")
     if archetype not in ARCHETYPES:
         raise SystemExit("unknown archetype %r; have: %s"
                          % (archetype, ", ".join(sorted(ARCHETYPES))))
-    body = ARCHETYPES[archetype](spec)
+    body = ARCHETYPES[archetype](_substitute_spec(spec) if samples else spec)
     return {
         "page": spec.get("page", "page"),
         "archetype": archetype,
@@ -240,4 +301,6 @@ def expand(spec):
         "chrome": screen_chrome(spec),
         "nodes": body["nodes"],
         "nav": body["nav"],
+        "data": spec.get("data"),
+        "samples": spec.get("samples", {}),
     }

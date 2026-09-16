@@ -101,6 +101,10 @@ static void send_screenshot(void)
     }
     esp_log_level_set("*", prev);
 
+    // 拍完即还:92KB 不常驻,把堆让给 HTTPS 直连(mbedtls 握手需要几十 KB)。
+    // 若长时间运行后碎片化导致分配失败,按协议静默放弃(只影响截屏自查)。
+    heap_caps_free(s_snap_buf);
+    s_snap_buf = NULL;
 }
 
 static void snap_task(void *arg)
@@ -141,10 +145,11 @@ static void snap_task(void *arg)
 
 void serial_screenshot_init(void)
 {
-    // 开机早期(Wi-Fi/HTTP 尚未启动、堆最完整时)一次性预留整屏缓冲。
-    s_snap_buf = heap_caps_malloc(SNAP_BYTES, MALLOC_CAP_INTERNAL);
-    ESP_LOGI("snap", "buffer=%p largest_free=%u",
-             s_snap_buf, (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    // 截屏缓冲改为按需分配(拍时取、拍完还):开机即预留 92KB 会把空闲堆压到
+    // ~14KB,HTTPS 直连的 TLS 握手直接失败(-0x7F00 / 超时,实测 2026-09-16)。
+    // 换取:数据页可直连公网;代价是碎片化严重时截屏可能静默失败。
+    ESP_LOGI("snap", "lazy buffer, largest_free=%u",
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     xTaskCreate(snap_task, "snap_shot", 8192, NULL, 3, NULL);
 }
 

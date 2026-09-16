@@ -42,6 +42,8 @@ static const demo_entry_t DEMOS[] = {
       .key = demo_balance_key, .start = demo_balance_start, .stop = demo_balance_stop },
     { .name = "设置", .enter = demo_settings_enter, .exit = demo_settings_exit,
       .key = demo_settings_key },
+    { .name = "余额直连", .enter = demo_balance_direct_enter, .exit = demo_balance_direct_exit,
+      .key = demo_balance_direct_key, .start = demo_balance_direct_start, .stop = demo_balance_direct_stop },
 };
 #define DEMO_COUNT (sizeof(DEMOS) / sizeof(DEMOS[0]))
 #define INPUT_QUEUE_DEPTH 8
@@ -97,7 +99,13 @@ static void menu_build(void) {
         s_mascot = ui_pixel_mascot_create(s_menu_scr, 123,
                                           52 + (int)(DEMO_COUNT / 2) * 47);
     } else {
+        // 吉祥物落在网格的第一个空位(奇数项时右列那格空着);排满则落在下方。
+    if (DEMO_COUNT % 2 == 1) {
+        s_mascot = ui_pixel_mascot_create(s_menu_scr, 123,
+                                          52 + (int)(DEMO_COUNT / 2) * 47);
+    } else {
         s_mascot = ui_pixel_mascot_create(s_menu_scr, 101, 242);
+    }
     }
 
     menu_refresh();
@@ -119,6 +127,10 @@ static demo_nav_input_t navigation_input(bsp_btn_t btn, bsp_btn_ev_t event) {
 
 static void process_input(const input_event_t *input) {
     demo_nav_input_t nav_input = navigation_input(input->btn, input->event);
+    // 取证:页面退出必有此日志(区分用户操作/幽灵按键/异常)。
+    if (s_navigation.active >= 0 && nav_input == DEMO_NAV_INPUT_OK_LONG) {
+        ESP_LOGI(TAG, "OK_LONG: %s 页退出", DEMOS[s_navigation.active].name);
+    }
 
     if (s_navigation.active >= 0) {
         demo_nav_result_t result = demo_navigation_handle(&s_navigation, nav_input, true);
@@ -249,6 +261,7 @@ void app_main(void) {
     s_ok[6] = true;
     s_ok[7] = true;                                   // Balance 页面内自行降级
     s_ok[8] = true;                                   // Settings: 静态页面,无外设依赖
+    s_ok[9] = true;                                   // Balance_direct: 页面内自行降级
 
     if (bsp_lvgl_lock(1000)) {
         enter_menu();
