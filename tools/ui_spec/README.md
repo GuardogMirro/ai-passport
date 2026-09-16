@@ -91,10 +91,32 @@ Text baselines carry a measured per-face correction (`dy_corr` in `layout.FACES`
 derived from device captures and consistent with the faces' dominant `.ofs_y`
 (-2 at 12px, -4 at 24px). Re-measure with `diff_capture.py` after changing fonts.
 
+## Data pages
+
+A `"data"` section turns the page live. v1 ships one adapter:
+
+```json
+"data":   { "kind": "glm_quota", "poll_ms": 300000 },
+"samples": { "w5.pct": 17, "w5.theo": 20, "w5.reset": "13:19", ... }
+```
+
+`glm_quota` fetches the Zhipu quota endpoint **directly over HTTPS** (bearer key
+from net_config.h, certificate bundle verified), normalizes the two windows and
+computes the pace mark on-device after SNTP sync — no PC involved, so the badge
+works with the computer off. Placeholders (`{{w5.pct}}` etc.) bind widgets to
+the adapter; `samples` are preview-only values and never compiled.
+
+Device-verified end to end (2026-09-16): TLS handshake and certificate
+validation pass, endpoint answers 200, and the rendered bars and pace marks
+match the PC-side proxy pixel for pixel. Two firmware lessons from that run are
+baked in: the 92KB screenshot buffer became lazy (allocate on capture, free
+after) because a resident one starves mbedtls at 13.7KB free heap, and
+WIFI_PS_NONE is avoided — it fixed nothing (the timeouts were a heap symptom)
+and full-power radio correlated with phantom key events while the badge was
+handled.
+
 ## Not built yet
 
-Data binding (spec placeholders fed by a fetch task), row actions and sub-pages,
-NVS-backed values, and wiring `diff_capture.py` into CI. Generated pages are
-static: their text and bar values come from the spec at generation time. The
-balance page is still hand-written because it owns Wi-Fi, HTTP and a poll task;
-migrating it needs the data-binding layer first.
+Row actions and sub-pages, NVS-backed values, adapters beyond glm_quota, and
+wiring `diff_capture.py` into CI. The LAN balance page stays hand-written;
+migrating it means choosing one of the two data paths.
