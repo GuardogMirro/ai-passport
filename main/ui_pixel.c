@@ -33,7 +33,14 @@ static void add_cloud(lv_obj_t *parent, int x, int y)
     block(parent, x + 27, y + 1, 9, 8, 0xFFFFFF);
 }
 
-lv_obj_t *ui_pixel_screen_create(const char *title)
+/* assets/fonts 下由 lv_font_conv 生成的中文字面(const 数据留在 flash)。 */
+extern const lv_font_t ui_font_cjk_12;
+extern const lv_font_t ui_font_cjk_24;
+
+const lv_font_t *ui_pixel_font_body(void) { return &ui_font_cjk_12; }
+const lv_font_t *ui_pixel_font_title(void) { return &ui_font_cjk_24; }
+
+lv_obj_t *ui_pixel_screen_create_font(const char *title, const lv_font_t *font)
 {
     lv_obj_t *scr = lv_obj_create(NULL);
     lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -53,9 +60,14 @@ lv_obj_t *ui_pixel_screen_create(const char *title)
     lv_obj_t *plate = block(scr, 5, 8, 151, 33, UI_PAPER);
     lv_obj_set_style_border_color(plate, lv_color_hex(UI_INK), 0);
     lv_obj_set_style_border_width(plate, 3, 0);
-    lv_obj_t *heading = ui_pixel_label(plate, title, &lv_font_montserrat_20, UI_INK);
+    lv_obj_t *heading = ui_pixel_label(plate, title, font ? font : &lv_font_montserrat_20, UI_INK);
     lv_obj_center(heading);
     return scr;
+}
+
+lv_obj_t *ui_pixel_screen_create(const char *title)
+{
+    return ui_pixel_screen_create_font(title, &lv_font_montserrat_20);
 }
 
 lv_obj_t *ui_pixel_panel_create(lv_obj_t *parent, int x, int y, int w, int h,

@@ -1,7 +1,7 @@
-// main/demo_balance.c —— GLM 积分余额监控页(官方配额版 v5)。
-// 每卡:标题(窗口重置时刻)+ 主百分比"实际%/理论%"+ 进度条(理论刻度线);
-// 数值来自 tools/balance_server.py 代理的智谱官方端点
-// /api/monitor/usage/quota/limit(与 PC 侧余额卡同源同数,理论节奏同算法)。
+// main/demo_balance.c —— GLM 积分余额监控页(官方配额 + 中文界面 v6)。
+// 每卡:标题(窗口 + 重置时刻,12px 中文字面)、主数值"实际% / 预估%"(24px)、
+// 进度条(带预估刻度线);数据来自 tools/balance_server.py 代理的智谱官方端点
+// /api/monitor/usage/quota/limit(与 PC 侧余额卡同源同数,预估节奏同算法)。
 #include "demo.h"
 #include "demo_radio.h"
 #include "bsp_display.h"
@@ -82,7 +82,7 @@ static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg; (void)base; (void)id;
     ip_event_got_ip_t *evt = (ip_event_got_ip_t *)data;
-    set_status(BAL_FETCHING, "IP " IPSTR "  fetching...", IP2STR(&evt->ip_info.ip));
+    set_status(BAL_FETCHING, "取数中 " IPSTR, IP2STR(&evt->ip_info.ip));
     if (s_wakeup) xSemaphoreGive(s_wakeup);
 }
 
@@ -90,7 +90,7 @@ static void on_disconnected(void *arg, esp_event_base_t base, int32_t id, void *
 {
     (void)arg; (void)base; (void)id; (void)data;
     if (s_running) {
-        set_status(BAL_WIFI_CONNECTING, "Wi-Fi lost, retrying...");
+        set_status(BAL_WIFI_CONNECTING, "Wi-Fi 断开,重连中");
         esp_wifi_connect();
     }
 }
@@ -102,14 +102,14 @@ static void parse_body(const char *body)
 {
     cJSON *root = cJSON_Parse(body);
     if (!root) {
-        set_status(BAL_ERROR, "Bad JSON");
+        set_status(BAL_ERROR, "数据格式错误");
         return;
     }
     const cJSON *ok = cJSON_GetObjectItem(root, "ok");
     if (!cJSON_IsTrue(ok)) {
         const cJSON *er = cJSON_GetObjectItem(root, "error");
-        set_status(BAL_ERROR, "srv: %s",
-                   (er && cJSON_IsString(er) && er->valuestring) ? er->valuestring : "not ok");
+        set_status(BAL_ERROR, "服务 %s",
+                   (er && cJSON_IsString(er) && er->valuestring) ? er->valuestring : "异常");
         cJSON_Delete(root);
         return;
     }
@@ -137,8 +137,8 @@ static void parse_body(const char *body)
     if (lvl && cJSON_IsString(lvl) && lvl->valuestring) strlcpy(s_level, lvl->valuestring, sizeof(s_level));
     s_stale = cJSON_IsTrue(st);
     cJSON_Delete(root);
-    if (s_stale) set_status(BAL_ONLINE, "%s stale %s", s_level, s_upd_time);
-    else set_status(BAL_ONLINE, "%s upd %s", s_level, s_upd_time);
+    if (s_stale) set_status(BAL_ONLINE, "缓存 %s", s_level);
+    else set_status(BAL_ONLINE, "在线 %s", s_level);
 }
 
 static void fetch_once(void)
@@ -147,7 +147,7 @@ static void fetch_once(void)
     esp_http_client_config_t cfg = { .url = NET_SERVER_URL, .timeout_ms = 8000 };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
-        set_status(BAL_ERROR, "HTTP init failed");
+        set_status(BAL_ERROR, "HTTP 初始化失败");
         return;
     }
     esp_err_t err = esp_http_client_open(client, 0);
@@ -198,7 +198,7 @@ static void wifi_stack_stop(void)
 
 esp_err_t demo_balance_start(void)
 {
-    set_status(BAL_WIFI_CONNECTING, "Wi-Fi connecting...");
+    set_status(BAL_WIFI_CONNECTING, "连接 Wi-Fi 中");
     esp_err_t err = demo_radio_nvs_prepare();
     if (err != ESP_OK) goto fail;
     err = demo_radio_network_prepare();
@@ -243,7 +243,7 @@ esp_err_t demo_balance_start(void)
     return ESP_OK;
 fail:
     wifi_stack_stop();
-    set_status(BAL_ERROR, "start failed: %s", esp_err_to_name(err));
+    set_status(BAL_ERROR, "启动失败 %s", esp_err_to_name(err));
     ESP_LOGE(TAG, "余额页启动失败: %s", esp_err_to_name(err));
     return err;
 }
@@ -297,34 +297,35 @@ static void tick(lv_timer_t *timer)
     else if (s_state == BAL_ONLINE && s_stale) lv_obj_set_style_text_color(s_status, lv_color_hex(UI_ORANGE), 0);
     else if (s_state == BAL_ONLINE) lv_obj_set_style_text_color(s_status, lv_color_hex(UI_GRASS_DARK), 0);
     else lv_obj_set_style_text_color(s_status, lv_color_hex(UI_SKY_DARK), 0);
-    if (s_upd_label) lv_label_set_text(s_upd_label, s_upd_time);
+    if (s_upd_label) lv_label_set_text_fmt(s_upd_label, "更新 %s", s_upd_time);
     // 配额上限以服务端官方值为准;拿不到时回退编译期档位宏。
     int lim5 = s_limit_5h > 0 ? s_limit_5h : NET_PLAN_5H;
     int limw = s_limit_wk > 0 ? s_limit_wk : NET_PLAN_WEEK;
     set_window(s_bar5, s_pct5, s_mark5, s_used_5h, lim5, s_theo_5h, UI_GRASS);
     set_window(s_barw, s_pctw, s_markw, s_used_wk, limw, s_theo_wk, UI_SKY);
-    lv_label_set_text_fmt(s_title5, "5H RESET %s", s_reset_5h[0] ? s_reset_5h : "--:--");
-    lv_label_set_text_fmt(s_titlew, "7D RESET %s", s_reset_wk[0] ? s_reset_wk : "--:--");
+    lv_label_set_text_fmt(s_title5, "5小时窗 重置 %s", s_reset_5h[0] ? s_reset_5h : "--:--");
+    lv_label_set_text_fmt(s_titlew, "7天窗 重置 %s", s_reset_wk[0] ? s_reset_wk : "--:--");
 }
 
 // 面板内部几何(内容区高 56px = 78 - 边框8 - 内边距14):
-// 标题 y1(14px)、百分比 y17(20px,底 y37)、进度条底锚 -3(y39-53)。
-// 条上另有 2px 宽理论刻度线(mark,y39-53,x=4+theo*132/100)。
+// 标题 y1(12px 中文,行高 11)、主数值 y15(24px,行高 22 → 底 y37)、
+// 进度条底锚 -3(y39-53,与数值留 2px 净空)。
+// 条上另有 2px 宽预估刻度线(mark,y39-53,x=4+theo*132/100)。
 static lv_obj_t *build_block(lv_obj_t *parent, const char *title, int y,
                              lv_obj_t **bar, lv_obj_t **pct,
                              lv_obj_t **title_out, lv_obj_t **mark_out)
 {
     lv_obj_t *panel = ui_pixel_panel_create(parent, 12, y, 216, 78, UI_PAPER);
     lv_obj_t *t = lv_label_create(panel);
-    lv_obj_set_style_text_font(t, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(t, ui_pixel_font_body(), 0);
     lv_obj_set_style_text_color(t, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(t, LV_ALIGN_TOP_LEFT, 4, 1);
     lv_label_set_text(t, title);
     if (title_out) *title_out = t;
     *pct = lv_label_create(panel);
-    lv_obj_set_style_text_font(*pct, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(*pct, ui_pixel_font_title(), 0);
     lv_obj_set_style_text_color(*pct, lv_color_hex(UI_INK), 0);
-    lv_obj_align(*pct, LV_ALIGN_TOP_LEFT, 4, 17);
+    lv_obj_align(*pct, LV_ALIGN_TOP_LEFT, 4, 15);
     lv_label_set_text(*pct, "-%");
     *bar = lv_bar_create(panel);
     lv_obj_set_style_bg_color(*bar, lv_color_hex(UI_MUTED), 0);
@@ -353,10 +354,10 @@ void demo_balance_enter(void)
     strlcpy(s_level, "GLM", sizeof(s_level));
     s_stale = false;
     strlcpy(s_upd_time, "--:--", sizeof(s_upd_time));
-    strlcpy(s_status_text, "starting...", sizeof(s_status_text));
+    strlcpy(s_status_text, "启动中", sizeof(s_status_text));
     s_state = BAL_WIFI_CONNECTING;
 
-    s_scr = ui_pixel_screen_create("BALANCE");
+    s_scr = ui_pixel_screen_create_font("余额", ui_pixel_font_title());
     // 截屏验证容器:240x192,内容整体收进来(截屏服务按容器渲染)
     lv_obj_t *content = lv_obj_create(s_scr);
     lv_obj_set_size(content, 240, 192);
@@ -367,18 +368,18 @@ void demo_balance_enter(void)
     lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_OFF);
     serial_screenshot_set_target(content);
 
-    build_block(content, "5H WINDOW", 8, &s_bar5, &s_pct5, &s_title5, &s_mark5);
-    build_block(content, "7D WINDOW", 92, &s_barw, &s_pctw, &s_titlew, &s_markw);
+    build_block(content, "5小时窗", 8, &s_bar5, &s_pct5, &s_title5, &s_mark5);
+    build_block(content, "7天窗", 92, &s_barw, &s_pctw, &s_titlew, &s_markw);
 
     s_status = lv_label_create(content);
     lv_obj_set_width(s_status, 216);
-    lv_obj_set_style_text_font(s_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_status, ui_pixel_font_body(), 0);
     lv_obj_set_style_text_color(s_status, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(s_status, LV_ALIGN_TOP_LEFT, 4, 172);
     lv_label_set_text(s_status, s_status_text);
 
     s_upd_label = lv_label_create(content);
-    lv_obj_set_style_text_font(s_upd_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_upd_label, ui_pixel_font_body(), 0);
     lv_obj_set_style_text_color(s_upd_label, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_upd_label, LV_ALIGN_TOP_RIGHT, -6, 172);
     lv_label_set_text(s_upd_label, s_upd_time);
