@@ -40,6 +40,8 @@ static const demo_entry_t DEMOS[] = {
       .key = demo_low_power_key, .start = demo_low_power_start, .stop = demo_low_power_stop },
     { .name = "Balance", .enter = demo_balance_enter, .exit = demo_balance_exit,
       .key = demo_balance_key, .start = demo_balance_start, .stop = demo_balance_stop },
+    { .name = "设置", .enter = demo_settings_enter, .exit = demo_settings_exit,
+      .key = demo_settings_key },
 };
 #define DEMO_COUNT (sizeof(DEMOS) / sizeof(DEMOS[0]))
 #define INPUT_QUEUE_DEPTH 8
@@ -80,12 +82,23 @@ static void menu_build(void) {
         int y = 52 + (int)(i / 2) * 47;
         s_cards[i] = ui_pixel_panel_create(s_menu_scr, x, y, 102, 40, UI_PAPER);
         s_rows[i] = lv_label_create(s_cards[i]);
-        lv_obj_set_style_text_font(s_rows[i], &lv_font_montserrat_14, 0);
+        bool ascii_name = true;
+        for (const char *p = DEMOS[i].name; *p; p++) {
+            if ((unsigned char)*p > 0x7F) { ascii_name = false; break; }
+        }
+        lv_obj_set_style_text_font(s_rows[i],
+            ascii_name ? &lv_font_montserrat_14 : ui_pixel_font_body(), 0);
         lv_obj_set_style_text_align(s_rows[i], LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_center(s_rows[i]);
     }
 
-    s_mascot = ui_pixel_mascot_create(s_menu_scr, 101, 242);
+    // 吉祥物落在网格的第一个空位(奇数项时右列那格空着);排满则落在下方。
+    if (DEMO_COUNT % 2 == 1) {
+        s_mascot = ui_pixel_mascot_create(s_menu_scr, 123,
+                                          52 + (int)(DEMO_COUNT / 2) * 47);
+    } else {
+        s_mascot = ui_pixel_mascot_create(s_menu_scr, 101, 242);
+    }
 
     menu_refresh();
     lv_screen_load(s_menu_scr);
@@ -235,6 +248,7 @@ void app_main(void) {
     s_ok[5] = true;
     s_ok[6] = true;
     s_ok[7] = true;                                   // Balance 页面内自行降级
+    s_ok[8] = true;                                   // Settings: 静态页面,无外设依赖
 
     if (bsp_lvgl_lock(1000)) {
         enter_menu();
