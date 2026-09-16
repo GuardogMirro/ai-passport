@@ -48,6 +48,16 @@ static void render_in_lvgl(void *arg)
 
 static void send_screenshot(void)
 {
+    // 尺寸检查必须在分配之前:菜单等全屏目标(240x320)塞不进缓冲,若先分配
+    // 再退出,92KB 会一直占着,把后续 HTTPS 直连的 TLS 挤成 -0x7F00 分配失败
+    // (2026-09-16 实测:菜单截屏一次即漏 92KB,空闲堆 110KB→16KB)。
+    lv_obj_t *obj = s_target ? s_target : lv_screen_active();
+    int32_t ow = lv_obj_get_width(obj);
+    int32_t oh = lv_obj_get_height(obj);
+    if (ow > SNAP_W || oh > SNAP_H) {
+        ESP_LOGW("snap", "target %ldx%ld exceeds buffer %dx%d", (long)ow, (long)oh, SNAP_W, SNAP_H);
+        return;   // 未分配,无泄漏
+    }
 
     if (!s_snap_buf) {
         s_snap_buf = heap_caps_malloc(SNAP_BYTES, MALLOC_CAP_INTERNAL);
@@ -60,29 +70,27 @@ static void send_screenshot(void)
     }
 
 
-    lv_obj_t *obj = s_target ? s_target : lv_screen_active();
-    int32_t ow = lv_obj_get_width(obj);
-    int32_t oh = lv_obj_get_height(obj);
-    if (ow > SNAP_W || oh > SNAP_H) {
-        ESP_LOGW("snap", "target %ldx%ld exceeds buffer %dx%d", (long)ow, (long)oh, SNAP_W, SNAP_H);
-        return;
-    }
-
     if (!s_render_done) s_render_done = xSemaphoreCreateBinary();
     xSemaphoreTake(s_render_done, 0);
     s_render_result = LV_RESULT_INVALID;
     if (lv_async_call(render_in_lvgl, obj) != LV_RESULT_OK) {
         ESP_LOGW("snap", "async call failed");
+        heap_caps_free(s_snap_buf);   // 失败路径同样要还,见上
+        s_snap_buf = NULL;
         return;
     }
     if (!xSemaphoreTake(s_render_done, pdMS_TO_TICKS(3000))) {
         ESP_LOGW("snap", "render timeout");
+        heap_caps_free(s_snap_buf);
+        s_snap_buf = NULL;
         return;
     }
     lv_result_t r = s_render_result;
 
     if (r != LV_RESULT_OK) {
         ESP_LOGW("snap", "snapshot render failed");
+        heap_caps_free(s_snap_buf);
+        s_snap_buf = NULL;
         return;
     }
 
