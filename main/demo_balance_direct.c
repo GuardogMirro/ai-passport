@@ -87,16 +87,34 @@ static void apply_error(const char *msg)
     bsp_lvgl_unlock();
 }
 
-// 拉数据:GOT-IP 或周期到点唤醒;首次取数前最多等 6 秒 SNTP,
-// 否则理论节奏(theo)算不出来。
+// 过渡态(对时中等):状态行蓝灰字,与成功(绿)/失败(红)区分。
+static void apply_status(const char *msg)
+{
+    if (!stl) return;
+    if (!bsp_lvgl_lock(500)) return;
+    lv_label_set_text(stl, msg);
+    lv_obj_set_style_text_color(stl, lv_color_hex(UI_SKY_DARK), 0);
+    bsp_lvgl_unlock();
+}
+
+// 拉数据:GOT-IP 或周期到点唤醒。取数前必须等 SNTP 对时:TLS 证书
+// 验证依赖正确时间,未对时就请求必失败,页面表现为"网络或服务错误"
+// (2026-09-16 排障:间歇性报错的根源)。最多等 30 秒,期间状态行提示
+// 对时中;仍未对上则跳过本轮取数,下个周期(或手动刷新)再试。
 static void fetch_task(void *arg)
 {
     (void)arg;
     while (s_running) {
         xSemaphoreTake(s_wakeup, pdMS_TO_TICKS(300000));
         if (!s_running) break;
-        for (int i = 0; i < 60 && s_running && !net_link_time_valid(); i++) {
+        if (!net_link_time_valid()) apply_status("对时中…");
+        for (int i = 0; i < 300 && s_running && !net_link_time_valid(); i++) {
             vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        if (!s_running) break;
+        if (!net_link_time_valid()) {
+            apply_error("对时未成,稍后重试");
+            continue;
         }
         glm_quota_t q;
         if (glm_quota_fetch(&q) == ESP_OK) apply_data(&q);
