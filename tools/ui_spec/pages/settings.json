@@ -1,0 +1,26 @@
+{
+  "page": "settings",
+  "type": "list",
+  "title": "设置",
+  "title_font": "cjk24",
+  "capture": { "x": 0, "y": 48, "w": 240, "h": 192 },
+  "top": 8,
+  "row_height": 30,
+  "gap": 8,
+  "sections": [
+    {
+      "title": "显示",
+      "rows": [
+        { "label": "亮度", "value": "80%", "chevron": true },
+        { "label": "自动息屏", "value": "5 分钟" }
+      ]
+    },
+    {
+      "title": "数据",
+      "rows": [
+        { "label": "刷新间隔", "value": "5 分钟", "chevron": true },
+        { "label": "关于本机", "chevron": true }
+      ]
+    }
+  ]
+}

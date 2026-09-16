@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-# tools/check_font_coverage.py -- verify every non-ASCII char used in UI string
-# literals is present in the compiled CJK charset, so a missing glyph (rendered
-# as a placeholder box on screen) is caught before build/flash instead of after.
-#
-# usage: python tools/check_font_coverage.py <charset.txt> <src.c> [<src2.c> ...]
-# exit 0 = covered, 1 = missing glyphs listed.
+"""tools/fonttools/check_font_coverage.py -- glyph coverage gate.
+
+Fails when a character that will reach the screen is absent from the compiled
+CJK charset, so a missing glyph is caught before build instead of appearing as
+a placeholder box on the panel.
+
+Scans two kinds of source:
+  *.c / *.h   non-ASCII characters inside string literals (comments stripped)
+  *.json      every string value in a ui_spec page description
+
+usage: python tools/fonttools/check_font_coverage.py <charset.txt> <file> [...]
+exit 0 = covered, 1 = missing glyphs listed, 2 = usage error.
+"""
+import json
 import re
 import sys
 
@@ -14,8 +22,27 @@ def strip_comments(src):
     return re.sub(r"//[^\n]*", "", src)
 
 
-def literals(src):
+def c_literals(src):
     return re.findall(r'"((?:[^"\\\n]|\\.)*)"', src)
+
+
+def json_strings(node):
+    if isinstance(node, dict):
+        for v in node.values():
+            yield from json_strings(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from json_strings(v)
+    elif isinstance(node, str):
+        yield node
+
+
+def texts_of(path):
+    with open(path, encoding="utf-8") as f:
+        raw = f.read()
+    if path.lower().endswith(".json"):
+        return list(json_strings(json.loads(raw)))
+    return c_literals(strip_comments(raw))
 
 
 def main():
@@ -26,26 +53,24 @@ def main():
     with open(charset_path, encoding="utf-8") as f:
         charset = set(f.read())
 
-    total_missing = {}
+    missing_all = {}
     for path in sources:
-        with open(path, encoding="utf-8") as f:
-            src = strip_comments(f.read())
-        file_missing = {}
-        for lit in literals(src):
-            for ch in lit:
+        missing = {}
+        for text in texts_of(path):
+            for ch in text:
                 if ord(ch) > 0x7F and ch not in charset:
-                    file_missing[ch] = file_missing.get(ch, 0) + 1
-        if file_missing:
+                    missing[ch] = missing.get(ch, 0) + 1
+        if missing:
             print("MISSING in %s:" % path)
-            for ch, n in sorted(file_missing.items()):
+            for ch, n in sorted(missing.items()):
                 print("  U+%04X %s  x%d" % (ord(ch), ch, n))
-            total_missing.update(file_missing)
+            missing_all.update(missing)
 
-    if total_missing:
-        print("FAIL: %d distinct glyphs not in %s" % (len(total_missing), charset_path))
+    if missing_all:
+        print("FAIL: %d distinct glyphs not in %s" % (len(missing_all), charset_path))
         return 1
-    print("PASS: all non-ASCII UI literals covered by %s (%d chars)"
-          % (charset_path, len(charset)))
+    print("PASS: all non-ASCII screen text covered by %s (%d chars, %d files)"
+          % (charset_path, len(charset), len(sources)))
     return 0
 
 
