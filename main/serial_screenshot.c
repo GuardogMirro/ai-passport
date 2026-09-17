@@ -6,6 +6,8 @@
 #include "serial_screenshot.h"
 
 #include "bsp_display.h"
+#include "demo_radio.h"
+#include "wifi_store.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_heap_caps.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -27,9 +29,15 @@
 #define CMD_LEN (sizeof(CMD) - 1)
 
 static uint8_t *s_snap_buf;   // 运行时从内部堆分配,失败按协议静默放弃
-static char s_win[CMD_LEN * 2];
 static lv_obj_t *s_target;
-static int s_win_len;
+
+// ---- 行式宿主命令(以 \n 结尾一行一条,与截屏子串协议并存) ----
+// 现有命令:FAP_SCREENSHOT_V1(整屏回传)/FAP_WIFI_LIST_V1/ADD/DEL。
+// 回答行均以命令名开头,便于宿主工具按前缀过滤日志噪声。
+#define HOST_LINE_MAX 160
+static char s_line[HOST_LINE_MAX];
+static int s_line_len;
+static bool s_line_overlong;
 
 
 static SemaphoreHandle_t s_render_done;
@@ -115,6 +123,83 @@ static void send_screenshot(void)
     s_snap_buf = NULL;
 }
 
+static void host_reply(const char *s)
+{
+    usb_serial_jtag_write_bytes((const uint8_t *)s, strlen(s), pdMS_TO_TICKS(1000));
+}
+
+// 处理一条完整行(不含行尾)。Wi-Fi 命令动 NVS,先确保 NVS 就绪(幂等)。
+// 密码只进存储,永不回显、不打日志。
+static void handle_host_line(char *line)
+{
+    if (strcmp(line, CMD) == 0) {
+        send_screenshot();
+        return;
+    }
+    if (strcmp(line, "FAP_WIFI_LIST_V1") == 0) {
+        if (demo_radio_nvs_prepare() != ESP_OK) {
+            host_reply("FAP_WIFI_LIST_V1 ERR nvs\n");
+            return;
+        }
+        wifi_store_t ws;
+        if (wifi_store_load(&ws) != ESP_OK) {
+            host_reply("FAP_WIFI_LIST_V1 ERR load\n");
+            return;
+        }
+        char buf[64];
+        snprintf(buf, sizeof(buf), "FAP_WIFI_LIST_V1 %u\n", (unsigned)ws.count);
+        host_reply(buf);
+        for (size_t i = 0; i < ws.count; i++) {
+            snprintf(buf, sizeof(buf), "FAP_WIFI_PROF %s\n", ws.creds[i].ssid);
+            host_reply(buf);
+        }
+        return;
+    }
+    if (strncmp(line, "FAP_WIFI_ADD_V1 ", 16) == 0) {
+        char *rest = line + 16;
+        char *sep = strchr(rest, '\t');
+        if (!sep) sep = strchr(rest, ',');   // 制表符优先;SSID 含逗号时用 \t 分隔
+        if (!sep) {
+            host_reply("FAP_WIFI_ADD_V1 ERR sep\n");
+            return;
+        }
+        *sep = 0;
+        if (demo_radio_nvs_prepare() != ESP_OK) {
+            host_reply("FAP_WIFI_ADD_V1 ERR nvs\n");
+            return;
+        }
+        esp_err_t err = wifi_store_add(rest, sep + 1);
+        if (err == ESP_OK) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "FAP_WIFI_ADD_V1 OK %s\n", rest);
+            host_reply(buf);
+        } else {
+            char buf[80];
+            snprintf(buf, sizeof(buf), "FAP_WIFI_ADD_V1 ERR %s\n", esp_err_to_name(err));
+            host_reply(buf);
+        }
+        return;
+    }
+    if (strncmp(line, "FAP_WIFI_DEL_V1 ", 16) == 0) {
+        if (demo_radio_nvs_prepare() != ESP_OK) {
+            host_reply("FAP_WIFI_DEL_V1 ERR nvs\n");
+            return;
+        }
+        esp_err_t err = wifi_store_del(line + 16);
+        if (err == ESP_OK) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "FAP_WIFI_DEL_V1 OK %s\n", line + 16);
+            host_reply(buf);
+        } else {
+            char buf[80];
+            snprintf(buf, sizeof(buf), "FAP_WIFI_DEL_V1 ERR %s\n", esp_err_to_name(err));
+            host_reply(buf);
+        }
+        return;
+    }
+    host_reply("FAP_WIFI_ERR unknown\n");
+}
+
 static void snap_task(void *arg)
 {
     (void)arg;
@@ -128,22 +213,19 @@ static void snap_task(void *arg)
         int n = usb_serial_jtag_read_bytes(&byte, 1, pdMS_TO_TICKS(200));
         if (n == 1) {
             if (byte == '\n' || byte == '\r') {
-                s_win_len = 0;
-            } else if (s_win_len < (int)sizeof(s_win) - 1) {
-                s_win[s_win_len++] = (char)byte;
-                s_win[s_win_len] = 0;
-                if (s_win_len >= (int)CMD_LEN &&
-                    memcmp(s_win + s_win_len - CMD_LEN, CMD, CMD_LEN) == 0) {
-                    s_win_len = 0;
-                    send_screenshot();
+                if (s_line_len > 0) {
+                    if (s_line_overlong) host_reply("FAP_WIFI_ERR toolong\n");
+                    else {
+                        s_line[s_line_len] = 0;
+                        handle_host_line(s_line);
+                    }
                 }
+                s_line_len = 0;
+                s_line_overlong = false;
+            } else if (s_line_len >= HOST_LINE_MAX - 1) {
+                s_line_overlong = true;   // 继续吞字节直到行尾再报错
             } else {
-                memmove(s_win, s_win + 1, s_win_len - 1);
-                s_win[CMD_LEN * 2 - 2] = (char)byte;
-                if (memcmp(s_win + s_win_len - 1 - CMD_LEN, CMD, CMD_LEN) == 0) {
-                    s_win_len = 0;
-                    send_screenshot();
-                }
+                s_line[s_line_len++] = (char)byte;
             }
         } else {
             vTaskDelay(pdMS_TO_TICKS(100));   // 无数据/出错都退避,勿忙等(踩过坑:超时返回 0 也算)

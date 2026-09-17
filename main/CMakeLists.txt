@@ -1,4 +1,4 @@
-﻿idf_component_register(
+idf_component_register(
     SRCS "main.c"
          "demo_navigation.c"
          "ui_pixel.c"
@@ -15,6 +15,8 @@
          "serial_screenshot.c"
          "demo_balance_direct.c"
          "net_link.c"
+         "wifi_store.c"
+         "wifi_pick.c"
          "http_json.c"
          "glm_quota.c"
          "demo_settings.c"

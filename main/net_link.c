@@ -2,6 +2,7 @@
 #include "net_link.h"
 
 #include "demo_radio.h"
+#include "wifi_store.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -19,6 +20,8 @@
 #endif
 
 static const char *TAG = "net_link";
+
+#define WIFI_SCAN_KEEP 20   // aps[] is static; cap scan records to keep BSS small
 
 static esp_netif_t *s_sta;
 static esp_event_handler_instance_t s_got_ip;
@@ -73,17 +76,62 @@ esp_err_t net_link_start(net_link_cb_t on_got_ip_cb)
     if (err != ESP_OK) goto fail;
     s_handlers = true;
     wifi_config_t wc = { 0 };
-    strlcpy((char *)wc.sta.ssid, NET_WIFI_SSID, sizeof(wc.sta.ssid));
-    strlcpy((char *)wc.sta.password, NET_WIFI_PASS, sizeof(wc.sta.password));
     err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
     if (err != ESP_OK) goto fail;
     err = esp_wifi_set_mode(WIFI_MODE_STA);
     if (err != ESP_OK) goto fail;
-    err = esp_wifi_set_config(WIFI_IF_STA, &wc);
-    if (err != ESP_OK) goto fail;
     err = esp_wifi_start();
     if (err != ESP_OK) goto fail;
     s_wifi_started = true;
+
+    // 多配置自动选网:扫一圈(阻塞约 1.6s),连"存储里认识的网络中信号最强的"
+    // (存储首跑会从 net_config.h 播种)。扫描里没有认识的 -> 按存储顺序试
+    // (覆盖隐藏 SSID);存储为空 -> 编译默认(SET-ME 会失败,如实报日志)。
+    wifi_store_t ws = { 0 };
+    const wifi_cred_t *pick = NULL;
+    if (wifi_store_load(&ws) == ESP_OK && ws.count > 0) {
+        static wifi_ap_record_t aps[WIFI_SCAN_KEEP];
+        const char *ssids[WIFI_SCAN_KEEP];
+        int16_t rssis[WIFI_SCAN_KEEP];
+        wifi_scan_config_t sc = { 0 };
+        uint16_t n = 0;
+        if (esp_wifi_scan_start(&sc, true) == ESP_OK &&
+            esp_wifi_scan_get_ap_num(&n) == ESP_OK) {
+            if (n > WIFI_SCAN_KEEP) n = WIFI_SCAN_KEEP;
+            if (n > 0 && esp_wifi_scan_get_ap_records(&n, aps) == ESP_OK) {
+                for (uint16_t i = 0; i < n; i++) {
+                    ssids[i] = (const char *)aps[i].ssid;
+                    rssis[i] = aps[i].rssi;
+                }
+                int idx = wifi_pick_best(ws.creds, ws.count, ssids, rssis, n);
+                if (idx >= 0) {
+                    pick = &ws.creds[idx];
+                    int16_t prssi = 0;
+                    for (uint16_t i2 = 0; i2 < n; i2++) {
+                        if (strcmp(ssids[i2], pick->ssid) == 0) { prssi = rssis[i2]; break; }
+                    }
+                    ESP_LOGI(TAG, "scan %u APs -> '%s' (rssi %d)",
+                             (unsigned)n, pick->ssid, (int)prssi);
+                }
+            }
+        }
+        if (!pick) {
+            pick = &ws.creds[0];   // 扫描无匹配:按存储顺序试(隐藏 SSID 等)
+            ESP_LOGW(TAG, "no known AP in scan (%u seen), trying '%s' by order",
+                     (unsigned)n, pick->ssid);
+        }
+    }
+    if (pick) {
+        strlcpy((char *)wc.sta.ssid, pick->ssid, sizeof(wc.sta.ssid));
+        strlcpy((char *)wc.sta.password, pick->pass, sizeof(wc.sta.password));
+    } else {
+        strlcpy((char *)wc.sta.ssid, NET_WIFI_SSID, sizeof(wc.sta.ssid));
+        strlcpy((char *)wc.sta.password, NET_WIFI_PASS, sizeof(wc.sta.password));
+    }
+    err = esp_wifi_set_config(WIFI_IF_STA, &wc);
+    if (err != ESP_OK) goto fail;
+    ESP_LOGI(TAG, "connecting to '%s' (%u profile(s) stored)",
+             pick ? pick->ssid : NET_WIFI_SSID, (unsigned)ws.count);
     // 省电模式保持默认:实测 WIFI_PS_NONE(全功率常开)会干扰 GPIO0 按键
     // ADC 采样,页面出现"幽灵 OK 长按"自动退回菜单(2026-09-16);而堆余量
     // 修好后(截屏缓冲改懒分配),默认省电下取数不再超时。
