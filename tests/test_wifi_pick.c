@@ -41,11 +41,18 @@ int main(void)
         const int16_t rr[] = { -60, -60 };
         CHECK(wifi_pick_best(creds, 3, ss, rr, 2) == 0, "tie -> first stored");
     }
-    // 5. duplicate scan entries for one SSID pick that profile
+    // 5. duplicates of one SSID do not shadow a stronger other SSID:
+    // office(-45) beats home(-50) even though home appears twice.
     {
         const char *ss[] = { "home", "home", "office" };
         const int16_t rr[] = { -80, -50, -45 };
-        CHECK(wifi_pick_best(creds, 3, ss, rr, 3) == 1, "dup scan entries");
+        CHECK(wifi_pick_best(creds, 3, ss, rr, 3) == 0, "strongest wins over dups");
+    }
+    // 5b. duplicate entries of one SSID: the strongest copy counts
+    {
+        const char *ss[] = { "home", "home", "office" };
+        const int16_t rr[] = { -80, -50, -70 };
+        CHECK(wifi_pick_best(creds, 3, ss, rr, 3) == 1, "dup entries use best rssi");
     }
     // 6. NULL scan entry is skipped
     {
